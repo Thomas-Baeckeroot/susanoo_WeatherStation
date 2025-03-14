@@ -57,3 +57,6 @@ Configuration is either in ~/.config/susanoo_WeatherStation.conf or in table *se
 |         relay (out) |              **GPIO 26**| `37`| `38`|**GPIO 20** / PCM > DIN  | btn (in)          |
 |                     |                    GND  | `39`| `40`|**GPIO 21** / PCM > DOUT | Shutdown btn (in) |
 
+
+note:  
+Database must be improved as it tends to consume CPU overtime.
