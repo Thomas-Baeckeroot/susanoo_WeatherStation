@@ -1,4 +1,4 @@
-# Weather station with Raspberry Pi
+# Weather station with Raspberry Pi (truc en plus Loic)
 
 Webserver hosting a weather station, built on top of a Raspberry Pi (eventually a 0) with weather sensors.
 - data history
