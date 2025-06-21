@@ -259,8 +259,17 @@ def main():  # Expected to be called once per minute
     first_remote = True
     local_camera_name = None
 
-    conn = db_module.get_conn()
-    curs = conn.cursor()
+    conn = None
+    db_available = False
+    try:
+        conn = db_module.get_conn()
+        db_available = True
+        log.info("✓ Database connection successful")
+    except Exception as e:
+        log.warning(f"✗ Database connection failed: {str(e)}")
+        log.info("→ Continuing in fallback mode")
+        db_available = False
+        # TODO Add a notification sending on critical errors!
 
     # name   | priority |        sensor_label         | decimals | cumulative | unit | consolidated | sensor_type
     read_sensors_query = \
@@ -268,8 +277,23 @@ def main():  # Expected to be called once per minute
         "        consolidated, sensor_type, filepath_last, filepath_data " \
         "FROM    sensors " \
         "    LEFT JOIN captures ON sensors.name = captures.sensor_name; "
-    curs.execute(read_sensors_query)
-    sensors = curs.fetchall()
+
+    sensors = []
+    curs = None
+    if db_available and conn:
+        try:
+            curs = conn.cursor()
+            curs.execute(read_sensors_query)
+            log.info("DB query successfully executed.")
+            sensors = curs.fetchall()
+        except (pymysql.err.OperationalError, pymysql.err.DatabaseError) as e:
+            log.error(f"✗ Database Query FAILED: {str(e)}")
+        except Exception as e:
+            log.error(f"✗ Unexpected error during DB query: {str(e)}")
+
+    else:
+        log.warning("Unable to connect to DB to get list of sensors! (no DB)")
+
     values = []
     for sensor in sensors:
         (sensor_name, sensor_label, decimals, cumulative, unit,
@@ -398,12 +422,17 @@ def main():  # Expected to be called once per minute
             if (max_epoch_from_consolidated is None) or (max_epoch_from_consolidated + period) < max_epoch_from_raw:
                 consolidate_from_raw(curs, sensor, period)
 
-    # log.debug("closing cursor...")
-    curs.close()
+    if curs:
+        log.debug("Closing DB cursor...")
+        curs.close()
+    else:
+        log.error("No DB cursor to close!")
 
-    # Close DB
-    # log.debug("closing db...")
-    conn.close()
+    if conn:
+        log.debug("closing db...")
+        conn.close()
+    else:
+        log.error("No DB connection to close!")
 
     is_daily_run = is_multiple(main_call_epoch, 86400)  # 60x60x24 s = 1 day
     if is_daily_run:
