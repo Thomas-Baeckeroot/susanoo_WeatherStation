@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS sensors
-    (   name            VARBINARY(10),  -- (MariaDB)
+    (   name            VARBINARY(8),  -- (MariaDB)
     --  name  CHAR(8),  -- PRIMARY KEY" -- (PostgreSQL)
         priority        INTEGER,        -- priority value: from 0 to 100; ie: 20 for main values (temp.) TODO Can be optimised as TINYINT
         sensor_label    TEXT,
@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS sensors
         cumulative      BOOLEAN,        -- ie: True for mm of water, false for temperature
         unit            TEXT,
         consolidated    TEXT,           -- time-range (in s.) for consolidation; ie: 900 -> data consolidated per 15 minutes
-        sensor_type     TEXT
+        sensor_type     TEXT            -- See possible values by searching for "sensor_type == " in periodical_sensor_reading.py
         -- sensor_config  TEXT          -- ie 'GPIO23'
     );
 
@@ -35,13 +35,13 @@ CREATE TABLE consolidated_measures
         max_value       REAL,
         mean_value      REAL,
         total_values    REAL,
-        sensor          VARBINARY(10),  -- REFERENCES sensors (name) (MariaDB)
+        sensor          VARBINARY(8),   -- REFERENCES sensors (name) (MariaDB)
     --  sensor          CHAR(8),        -- REFERENCES sensors (name) (PostgreSQL)
         period          INTEGER         -- period in seconds: =900 for 15 minutes periods
     );
 
 CREATE TABLE IF NOT EXISTS captures
-    (   sensor_name     VARBINARY(10),  -- REFERENCES sensors (name) (MariaDB)
+    (   sensor_name     VARBINARY(8),   -- REFERENCES sensors (name) (MariaDB)
         filepath_last   TINYTEXT,       -- 255 chars should be enough, extend to TEXT possible
         filepath_data   TINYTEXT        -- last image with visible data
     );
