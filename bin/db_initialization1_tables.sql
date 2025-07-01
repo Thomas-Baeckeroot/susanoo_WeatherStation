@@ -1,9 +1,9 @@
 CREATE TABLE IF NOT EXISTS sensors
     (   name            VARBINARY(8),  -- (MariaDB)
     --  name  CHAR(8),  -- PRIMARY KEY" -- (PostgreSQL)
-        priority        INTEGER,        -- priority value: from 0 to 100; ie: 20 for main values (temp.) TODO Can be optimised as TINYINT
+        priority        TINYINT,        -- priority value: from 0 to 100; ie: 20 for main values (temp.)
         sensor_label    TEXT,
-        decimals        INTEGER,        -- decimal places: 0 = rounded at unit, 1 = 1/10th of unit, ... TODO Can be optimised as TINYINT
+        decimals        TINYINT,        -- decimal places: 0 = rounded at unit, 1 = 1/10th of unit, ...
         cumulative      BOOLEAN,        -- ie: True for mm of water, false for temperature
         unit            TEXT,
         consolidated    TEXT,           -- time-range (in s.) for consolidation; ie: 900 -> data consolidated per 15 minutes
