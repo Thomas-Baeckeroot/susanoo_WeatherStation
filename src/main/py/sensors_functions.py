@@ -78,6 +78,7 @@ def take_picture(camera_name):
     awb_gains_red = config.getfloat("CAMERA:" + camera_name, "awb_gains_red", fallback=None)
     awb_gains_blue = config.getfloat("CAMERA:" + camera_name, "awb_gains_blue", fallback=None)
     brightness = config.getint("CAMERA:" + camera_name, "brightness", fallback=None)
+    contrast = config.getint("CAMERA:" + camera_name, "contrast", fallback=None)
     resolution = config.get("CAMERA:" + camera_name, "resolution", fallback=None)
     capture_tentatives = 0
     while capture_tentatives < 23:
@@ -97,6 +98,9 @@ def take_picture(camera_name):
 
             if brightness:
                 camera.brightness = brightness
+
+            if contrast:
+                camera.contrast = contrast
 
             if resolution:
                 camera.resolution = resolution
