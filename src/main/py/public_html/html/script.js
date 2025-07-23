@@ -19,19 +19,19 @@ async function fetchData(sensor, year, month, day) {
     // Construct the URL with parameters for the fetch call
     let url = "/captures.json";
     let firstParam = true;
-    if (sensor !== null) {
+    if (sensor !== null && sensor !== 'null' && sensor !== undefined) {
         url += (firstParam ? "?s=" : "&s=") + sensor;
         firstParam = false;
     }
-    if (year !== null) {
+    if (year !== null && year !== 'null' && year !== undefined) {
         url += (firstParam ? "?y=" : "&y=") + year;
         firstParam = false;
     }
-    if (month !== null) {
+    if (month !== null && month !== 'null' && month !== undefined) {
         url += (firstParam ? "?m=" : "&m=") + month;
         firstParam = false;
     }
-    if (day !== null) {
+    if (day !== null && day !== 'null' && day !== undefined) {
         url += (firstParam ? "?d=" : "&d=") + day;
     }
     try {
@@ -47,6 +47,7 @@ async function fetchData(sensor, year, month, day) {
                 "month_day": null, "error_message": err
             };
             sortedPictures = {};
+			return;
         }
 
         const data = await response.json();
@@ -61,9 +62,27 @@ async function fetchData(sensor, year, month, day) {
             console.log(".fetchData() - interpreted picturesProperties:", picturesProperties.sensor, picturesProperties.year);
         } else {
             console.error(".fetchData() - Incorrect JSON format.");
+            // Set fallback data when JSON format is incorrect
+            picturesData = {};
+            picturesProperties = {
+                "sensor": sensor || 'tilleul',
+                "year": year || new Date().getFullYear(),
+                "month_day": (month && day) ? String(month).padStart(2, '0') + '-' + String(day).padStart(2, '0') : null,
+                "error_message": "Incorrect JSON format from server"
+            };
+            sortedPictures = [];
         }
     } catch (error) {
         console.error(".fetchData() - An error occurred during the fetching of data from captures.json:", error.message);
+        // Set fallback data when fetch fails
+        picturesData = {};
+        picturesProperties = {
+            "sensor": sensor || 'tilleul',
+            "year": year || new Date().getFullYear(),
+            "month_day": (month && day) ? String(month).padStart(2, '0') + '-' + String(day).padStart(2, '0') : null,
+            "error_message": "Failed to fetch data: " + error.message
+        };
+        sortedPictures = [];
     }
 }
 
@@ -72,6 +91,11 @@ async function handleDayChangeClick(nDays) {
     console.log("picturesProperties.sensor = " + picturesProperties.sensor);
     console.log("picturesProperties.year = " + picturesProperties.year);
     console.log("picturesProperties.month_day (current) = " + picturesProperties.month_day);
+    // Safe against month_day null/undefined
+    if (!picturesProperties.month_day) {
+        console.error("picturesProperties.month_day is null or undefined");
+        return;
+    }
     const [month, day] = picturesProperties.month_day.split("-");
     const shiftedDate = new Date(parseInt(picturesProperties.year), parseInt(month) - 1, parseInt(day) + nDays);
     await refreshDate(picturesProperties.sensor, shiftedDate.getFullYear(), shiftedDate.getMonth() + 1, shiftedDate.getDate());
@@ -82,6 +106,11 @@ async function monthChange(nMonths) {
     console.log("picturesProperties.sensor = " + picturesProperties.sensor);
     console.log("picturesProperties.year = " + picturesProperties.year);
     console.log("picturesProperties.month_day (current) = " + picturesProperties.month_day);
+    // Safe against month_day null/undefined
+    if (!picturesProperties.month_day) {
+        console.error("picturesProperties.month_day is null or undefined");
+        return;
+    }
     const [month, day] = picturesProperties.month_day.split("-");
     const shiftedDate = new Date(parseInt(picturesProperties.year), parseInt(month) + nMonths - 1, parseInt(day));
     // todo "Next month" from date 31st/Jan. returns 3rd/March. It would be more logical to return last day of next month (February) instead.
@@ -90,11 +119,35 @@ async function monthChange(nMonths) {
 
 async function updateDateData() {
     console.log(".updateDateData()");
+
+    // Fallback to current date if picturesProperties is not initialised
+    if (!picturesProperties || !picturesProperties.year) {
+        const now = new Date();
+        picturesProperties = {
+            sensor: 'tilleul', // Used as default but probability to be right is low...
+            year: now.getFullYear(),
+            month_day: String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0'),
+            error_message: ''
+        };
+        console.warn("picturesProperties was not initialized, using current date as fallback");
+    }
+
     document.getElementById("current_year").textContent = picturesProperties.year;
-    const [month, day] = picturesProperties.month_day.split("-");
-    document.getElementById("current_month").textContent = month;
-    document.getElementById("current_day").textContent = day;
-    document.getElementById("current_sensor").textContent = picturesProperties.sensor;
+    if (picturesProperties.month_day) { // Safe against month_day null/undefined
+        const [month, day] = picturesProperties.month_day.split("-");
+        document.getElementById("current_month").textContent = month;
+        document.getElementById("current_day").textContent = day;
+    } else {
+        // Fallback to current date
+        const now = new Date();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        document.getElementById("current_month").textContent = month;
+        document.getElementById("current_day").textContent = day;
+        picturesProperties.month_day = month + '-' + day;
+        console.warn("month_day was null, using current date as fallback");
+    }
+	document.getElementById("current_sensor").textContent = picturesProperties.sensor;
 
     //makeElementClickable(document.getElementById("previous_day"));
     //document.getElementById("previous_day").addEventListener("click", handleDayChangeClick());
@@ -360,6 +413,11 @@ async function clearData() {
 
 async function refresh() {
     console.log(".refresh()");
+    // Add safety check before splitting
+    if (!picturesProperties.month_day) {
+        console.error("picturesProperties.month_day is null or undefined in refresh()");
+        return;
+    }
     const sensor = picturesProperties.sensor;
     const year = picturesProperties.year;
     const [month, day] = picturesProperties.month_day.split("-");
@@ -401,10 +459,26 @@ document.addEventListener("DOMContentLoaded", async function () {
     // Get the current URL
     const currentUrl = new URL(window.location.href);
     // Extract parameters using URLSearchParams
-    const paramSensor = currentUrl.searchParams.get("s");
-    const paramYear = currentUrl.searchParams.get("y");
-    const paramMonth = currentUrl.searchParams.get("m");
-    const paramDay = currentUrl.searchParams.get("d");
+    let paramSensor = currentUrl.searchParams.get("s");
+    let paramYear = currentUrl.searchParams.get("y");
+    let paramMonth = currentUrl.searchParams.get("m");
+    let paramDay = currentUrl.searchParams.get("d");
+
+    // Convert string 'null' to actual null
+    if (paramSensor === 'null' || paramSensor === '') paramSensor = null;
+    if (paramYear === 'null' || paramYear === '') paramYear = null;
+    if (paramMonth === 'null' || paramMonth === '') paramMonth = null;
+    if (paramDay === 'null' || paramDay === '') paramDay = null;
+
+    // Use current date as fallback if no valid parameters
+    if (!paramSensor || !paramYear || !paramMonth || !paramDay) {
+        const now = new Date();
+        paramSensor = paramSensor || 'tilleul';
+        paramYear = paramYear || now.getFullYear();
+        paramMonth = paramMonth || (now.getMonth() + 1);
+        paramDay = paramDay || now.getDate();
+        console.log("Using fallback date:", paramSensor, paramYear, paramMonth, paramDay);
+    }
 
     await refreshDate(paramSensor, paramYear, paramMonth, paramDay);
 
