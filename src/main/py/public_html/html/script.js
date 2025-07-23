@@ -47,7 +47,7 @@ async function fetchData(sensor, year, month, day) {
                 "month_day": null, "error_message": err
             };
             sortedPictures = {};
-			return;
+            return;
         }
 
         const data = await response.json();
@@ -481,6 +481,29 @@ document.addEventListener("DOMContentLoaded", async function () {
     }
 
     await refreshDate(paramSensor, paramYear, paramMonth, paramDay);
+
+    // Add keyboard navigation for arrow keys
+    document.addEventListener("keydown", function(event) {
+        // Only handle arrow keys if we have pictures loaded
+        if (!sortedPictures || sortedPictures.length === 0 || index === undefined) {
+            return;
+        }
+
+        switch(event.key) {
+            case "ArrowLeft":
+                event.preventDefault(); // Prevent default browser behavior
+                if (index > 0) {
+                    previousHhMm();
+                }
+                break;
+            case "ArrowRight":
+                event.preventDefault(); // Prevent default browser behavior
+                if (index < sortedPictures.length - 1) {
+                    nextHhMm();
+                }
+                break;
+        }
+    });
 
     console.log("DOMContentLoaded - ---DOMContentLoaded-end---");
 });
