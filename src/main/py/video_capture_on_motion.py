@@ -82,7 +82,7 @@ def start_video_capture():
             time.sleep(capture_tentatives)
 
     if not captured_success:
-        print("failed " + capture_tentatives + " times to take picture. Gave up!")
+        print("failed " + str(capture_tentatives) + " times to take picture. Gave up!")
         sys.stdout.flush()
 
     GPIO.output(GPIO_IR_LIGHTS_RELAY_OUT, GPIO.HIGH)
