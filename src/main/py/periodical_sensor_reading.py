@@ -3,6 +3,7 @@
 
 import failed_request
 import hc_sr04_lib_test
+import pymysql
 import public_html.db_module as db_module
 import logging
 import os
