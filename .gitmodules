@@ -1,3 +1,0 @@
-[submodule "src/lib/Adafruit_Python_BMP"]
-	path = src/lib/Adafruit_Python_BMP
-	url = https://github.com/adafruit/Adafruit_Python_BMP.git
