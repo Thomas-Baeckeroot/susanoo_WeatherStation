@@ -53,17 +53,17 @@ try:
     # Connect or Create DB File
     conn = db_module.get_conn()
     curs = conn.cursor()
+    # Last value of each sensor: the derived table uses the (sensor, epochtimestamp) index once
+    # ("index for group-by"); a correlated MAX() subquery per row took ~45 s on the NAS
     curs.execute(
-        "SELECT  sensor, epochtimestamp, measure "
-        "FROM    raw_measures AS raw1 "
-        "WHERE   epochtimestamp > " + two_day_ago + ""
-        "  AND   epochtimestamp ="
-        "          ( SELECT  MAX(epochtimestamp)"
-        "            FROM    raw_measures AS raw2"
-        "            WHERE   epochtimestamp > " + two_day_ago + ""
-        "              AND   raw1.sensor = raw2.sensor"
-        "            GROUP BY sensor"
-        "          ); ")
+        "SELECT  raw.sensor, raw.epochtimestamp, raw.measure "
+        "FROM    ( SELECT  sensor, MAX(epochtimestamp) AS last_epoch"
+        "          FROM    raw_measures"
+        "          WHERE   epochtimestamp > %s"
+        "          GROUP BY sensor ) AS last"
+        "  JOIN  raw_measures AS raw"
+        "    ON  raw.sensor = last.sensor AND raw.epochtimestamp = last.last_epoch",
+        (int(two_day_ago),))
     values = curs.fetchall()
     last_values = {}
     for value in values:
