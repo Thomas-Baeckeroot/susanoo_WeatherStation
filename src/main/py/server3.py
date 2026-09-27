@@ -20,6 +20,8 @@ LOG_FILE = HOME + "/susanoo-web.log"
 FAULT_LOG_FILE = HOME + "/susanoo-web.faults.log"
 SLOW_REQUEST_SECONDS = 30
 HEARTBEAT_SECONDS = 3600
+# Idle time after which a silent client connection is dropped, freeing its thread
+CLIENT_TIMEOUT_SECONDS = 120
 
 logging.basicConfig(
     filename=LOG_FILE,
@@ -132,6 +134,7 @@ in_flight_lock = threading.Lock()
 class LoggingCGIHandler(http.server.CGIHTTPRequestHandler):
     # handler.cgi_directories = ["~/public_html/"]  # Should be better if other than '/' but never worked...
     cgi_directories = ["/"]
+    timeout = CLIENT_TIMEOUT_SECONDS
 
     def log_message(self, format, *args):
         log.info("%s %s", self.address_string(), format % args)
@@ -155,7 +158,7 @@ class LoggingCGIHandler(http.server.CGIHTTPRequestHandler):
                 log.log(level, "%s %r done in %.2f s", self.address_string(), request_line, elapsed)
 
 
-class LoggingHTTPServer(http.server.HTTPServer):
+class LoggingHTTPServer(http.server.ThreadingHTTPServer):
     def handle_error(self, request, client_address):
         error = sys.exc_info()[1]
         if isinstance(error, CLIENT_DISCONNECTIONS):
