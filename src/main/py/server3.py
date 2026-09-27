@@ -170,6 +170,12 @@ class LoggingCGIHandler(http.server.CGIHTTPRequestHandler):
                 log.log(level, "%s %r done in %.2f s", self.address_string(), request_line, elapsed)
 
 
+    def run_cgi(self):
+        # A socket timeout makes its fd non-blocking; the forked CGI script writes to that fd directly,
+        # so large outputs (e.g. graph.svg) would fail with EAGAIN and be truncated
+        self.connection.settimeout(None)
+        return super().run_cgi()
+
     def send_head(self):
         self.range_remaining = None
         range_header = self.headers.get("Range")
