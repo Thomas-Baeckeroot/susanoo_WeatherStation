@@ -97,7 +97,7 @@ try:
             camera_row = \
                 camera_row + \
                 "<td><a href=\"/html/capture.html?" + result + \
-                "\"><img src=\"captures/" + filepath_data + \
+                "\"><img fetchpriority=\"high\" src=\"captures/" + filepath_data + \
                 "\" width=\"360em\" height=\"270em\" style=\"background-color: lightgray\" /></a><br/>" + \
                 sensor_label + "<br/>" + re.findall(r"(\d{4}-\d{2}-\d{2}.\d{2}-\d{2})", filepath_data)[0] + "</td>"
 
@@ -129,7 +129,7 @@ try:
                     "</td>\n\t<td style=\"text-align: center;\">" + \
                     "<a href=\"graph.svg?sensor=" + sensor_name + "&maxepoch=" + str(oldest_date) + \
                     "&width=980\">" + \
-                    "<img src=\"graph.svg?sensor=" + sensor_name + "&maxepoch=" + str(oldest_date) + \
+                    "<img data-src=\"graph.svg?sensor=" + sensor_name + "&maxepoch=" + str(oldest_date) + \
                     "&width=100\" style=\"width:6.25em;height:2.5em; background-color: whitesmoke\" />" + \
                     "</a><td></tr>\n"
             else:
@@ -162,6 +162,28 @@ except Exception as err:
     print("Exception: {0}".format(err), file=sys.stderr)
     traceback.print_exc(file=sys.stderr)
 
+# Graphs are slow to generate and would take all the browser's connections: load them after the photos
+html = html + """<script>
+(function () {
+    var photos = Array.prototype.filter.call(document.images, function (img) { return !img.dataset.src; });
+    var pending = photos.filter(function (img) { return !img.complete; }).length;
+    var started = false;
+    function loadGraphs() {
+        if (started) { return; }
+        started = true;
+        document.querySelectorAll("img[data-src]").forEach(function (img) { img.src = img.dataset.src; });
+    }
+    function photoDone() { if (--pending <= 0) { loadGraphs(); } }
+    photos.forEach(function (img) {
+        if (!img.complete) {
+            img.addEventListener("load", photoDone);
+            img.addEventListener("error", photoDone);
+        }
+    });
+    if (pending === 0) { loadGraphs(); }
+    setTimeout(loadGraphs, 5000);
+})();
+</script>"""
 html = html + "</body></html>"
 print(html)
 log.info("Terminated generating index.html")
