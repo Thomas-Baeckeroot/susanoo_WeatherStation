@@ -35,6 +35,15 @@ html = """<?xml version="1.0" encoding="UTF-8" ?>
 <head>
     <title>Centrale météo St Benoît</title>
     <link rel="icon" type="image/svg+xml" href="html/favicon.svg">
+    <style>
+        /* Spinner shown behind images until they are loaded */
+        img.loading {
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='9' fill='none' stroke='%23999' stroke-width='3' stroke-dasharray='42 15'%3E%3CanimateTransform attributeName='transform' type='rotate' from='0 12 12' to='360 12 12' dur='1s' repeatCount='indefinite'/%3E%3C/circle%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: center;
+            background-size: 1.5em 1.5em;
+        }
+    </style>
 </head>
 <body style="background-color: lightsteelblue;">"""
 
@@ -97,7 +106,7 @@ try:
             camera_row = \
                 camera_row + \
                 "<td><a href=\"/html/capture.html?" + result + \
-                "\"><img fetchpriority=\"high\" src=\"captures/" + filepath_data + \
+                "\"><img class=\"loading\" fetchpriority=\"high\" src=\"captures/" + filepath_data + \
                 "\" width=\"360em\" height=\"270em\" style=\"background-color: lightgray\" /></a><br/>" + \
                 sensor_label + "<br/>" + re.findall(r"(\d{4}-\d{2}-\d{2}.\d{2}-\d{2})", filepath_data)[0] + "</td>"
 
@@ -129,7 +138,7 @@ try:
                     "</td>\n\t<td style=\"text-align: center;\">" + \
                     "<a href=\"graph.svg?sensor=" + sensor_name + "&maxepoch=" + str(oldest_date) + \
                     "&width=980\">" + \
-                    "<img data-src=\"graph.svg?sensor=" + sensor_name + "&maxepoch=" + str(oldest_date) + \
+                    "<img class=\"loading\" data-src=\"graph.svg?sensor=" + sensor_name + "&maxepoch=" + str(oldest_date) + \
                     "&width=100\" style=\"width:6.25em;height:2.5em; background-color: whitesmoke\" />" + \
                     "</a><td></tr>\n"
             else:
@@ -165,6 +174,16 @@ except Exception as err:
 # Graphs are slow to generate and would take all the browser's connections: load them after the photos
 html = html + """<script>
 (function () {
+    function loaded(img) { img.classList.remove("loading"); }
+    document.querySelectorAll("img.loading").forEach(function (img) {
+        if (img.getAttribute("src") && img.complete) {
+            loaded(img);
+        } else {
+            img.addEventListener("load", function () { loaded(img); });
+            img.addEventListener("error", function () { loaded(img); });
+        }
+    });
+
     var photos = Array.prototype.filter.call(document.images, function (img) { return !img.dataset.src; });
     var pending = photos.filter(function (img) { return !img.complete; }).length;
     var started = false;
