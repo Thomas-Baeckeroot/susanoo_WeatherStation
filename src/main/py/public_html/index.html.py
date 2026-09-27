@@ -96,13 +96,9 @@ try:
         sensor_name = sensor_name.decode('ascii')
 
         if unit == "picture":  # Below 10, sensors are not displayed in top list (ie: pictures from camera)
-            arguments = {'image': filepath_data}
-            result = urllib.parse.urlencode(arguments, quote_via=urllib.parse.quote_plus)
-            # TODO From index.html, link to the image should point to "html/capture.html" without further parameters
-            # (letting capture.html showing the default date/time)
-
-            # 'password=xyz&username=administrator'   # "image=" + urllib.parse.quote(filepath_data)
-            # "<td><a href=\"/html/capture.html?image=" + urllib.parse.quote(filepath_data) + \
+            # Camera folder = first path component; sensor names are VARBINARY(8) and may be truncated
+            camera = filepath_data.split("/")[0]
+            result = urllib.parse.urlencode({"s": camera}, quote_via=urllib.parse.quote_plus)
             camera_row = \
                 camera_row + \
                 "<td><a href=\"/html/capture.html?" + result + \
