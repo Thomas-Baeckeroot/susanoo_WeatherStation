@@ -160,7 +160,7 @@ try:
         sensor_list + \
         "<tr style=\"border: .15em solid black;\">\n\t<td style=\"padding: 1em;\">" + \
         "<form action=\"index.html\" id=\"refresh-form\">" + \
-        "<input type=\"submit\" id=\"refresh-button\" style=\"padding: 1.2em;\" value=\"Rafraîchir\" />" + \
+        "<input type=\"submit\" id=\"refresh-button\" style=\"padding: 1.2em; width: 13em;\" value=\"Rafraîchir\" />" + \
         "</form></td>\n\t<td style=\"padding: 1em;\" colspan=\"3\">" + date_readings + "</td></tr>" + camera_row + \
         "</tr></table></td></tr></table>"
 
