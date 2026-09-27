@@ -159,8 +159,8 @@ try:
     sensor_list = \
         sensor_list + \
         "<tr style=\"border: .15em solid black;\">\n\t<td style=\"padding: 1em;\">" + \
-        "<form action=\"index.html\">" + \
-        "<input type=\"submit\" style=\"padding: 1.2em;\" value=\"Rafraichir\" />" + \
+        "<form action=\"index.html\" id=\"refresh-form\">" + \
+        "<input type=\"submit\" id=\"refresh-button\" style=\"padding: 1.2em;\" value=\"Rafraîchir\" />" + \
         "</form></td>\n\t<td style=\"padding: 1em;\" colspan=\"3\">" + date_readings + "</td></tr>" + camera_row + \
         "</tr></table></td></tr></table>"
 
@@ -173,6 +173,23 @@ except Exception as err:
 
 # Graphs are slow to generate and would take all the browser's connections: load them after the photos
 html = html + """<script>
+(function () {
+    // Grey out the refresh button while the new page is generated, so the click is visibly acknowledged
+    var refreshForm = document.getElementById("refresh-form");
+    if (refreshForm) {
+        refreshForm.addEventListener("submit", function () {
+            var button = document.getElementById("refresh-button");
+            setTimeout(function () {  // after the submission has started
+                button.disabled = true;
+                button.value = "Rafraîchissement…";
+            }, 0);
+            setTimeout(function () {
+                button.disabled = false;
+                button.value = "Rafraîchir";
+            }, 30000);
+        });
+    }
+})();
 (function () {
     function loaded(img) { img.classList.remove("loading"); }
     document.querySelectorAll("img.loading").forEach(function (img) {
