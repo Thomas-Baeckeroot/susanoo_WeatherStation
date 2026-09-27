@@ -109,6 +109,14 @@ def check_working_dir():
     return
 
 
+def put_own_python_first_in_path():
+    # Unsuffixed CGI scripts (captures.json, graph.svg...) run through '#!/usr/bin/env python3',
+    # so they only get the venv's modules if its bin/ comes first in PATH
+    python_dir = os.path.dirname(sys.executable)
+    os.environ["PATH"] = python_dir + os.pathsep + os.environ.get("PATH", "")
+    log.info("PATH for CGI scripts starts with '%s'", python_dir)
+
+
 def check_python_modules():
     # CGI scripts are run with sys.executable, so its environment must provide these
     missing = []
@@ -257,6 +265,8 @@ log.info("PID %d, Python %s; 'kill -USR1 %d' dumps all thread stacks to '%s'",
 check_working_dir()
 
 check_python_modules()
+
+put_own_python_first_in_path()
 
 cgitb.enable()
 
