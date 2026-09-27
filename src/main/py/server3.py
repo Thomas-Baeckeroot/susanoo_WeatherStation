@@ -4,13 +4,35 @@
 
 import http.server
 import cgitb
+import faulthandler
+import importlib.util
 import logging
 import os
 import signal
+import socket
 import sys
+import threading
+import time
 
-from utils import get_config
-from public_html.db_module import get_home
+HOME = os.path.expanduser("~")
+LOG_FILE = HOME + "/susanoo-web.log"
+# faulthandler writes raw stack dumps, kept apart from the regular log
+FAULT_LOG_FILE = HOME + "/susanoo-web.faults.log"
+SLOW_REQUEST_SECONDS = 30
+HEARTBEAT_SECONDS = 3600
+
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.DEBUG,
+    format='%(asctime)s %(levelname)-8.8s%(name)-14s (%(process)5d) %(threadName)s %(message)s')
+log = logging.getLogger("server3.py")
+
+try:
+    from utils import get_config
+except Exception:
+    # Typically "No module named 'pymysql'" when not started with the venv's python3
+    log.critical("Failed to import project modules with %s", sys.executable, exc_info=True)
+    raise
 
 
 def sigterm_handler(signum, frame):
@@ -24,6 +46,7 @@ def close_server():
         httpd.socket.close()
     except Exception as e:
         log.error(f"Error while closing the server socket: {e}")
+    log.info("Terminating _____________________________________________\n")
     sys.exit(0)
 
 
@@ -69,11 +92,11 @@ def check_working_dir():
         if file_exists("public_html"):
             os.chdir("public_html")
             if not current_dir_is_valid_working_dir():
-                os.chdir(get_home())
+                os.chdir(HOME)
                 if not current_dir_is_valid_working_dir():
                     log.critical("Unable to find pages to serve!")
         else:
-            os.chdir(get_home())
+            os.chdir(HOME)
             # TODO Server should start by default in "~/public_html/" ('captures' folder has to be moved there also)
             if not current_dir_is_valid_working_dir():
                 log.critical("Unable to find pages to serve!")
@@ -84,37 +107,95 @@ def check_working_dir():
 
 
 def check_python_modules():
-    log.info("Checking list of modules available in current environment...")
-    required_modules = ["pymysql", "svg.charts"]
-    i = 1
-    for module_name, module in sys.modules.items():
-        # log.debug("  - {:3d} - {}".format(i, module_name))
-        if module_name in required_modules:
-            required_modules.remove(module_name)
-        i += 1
+    # CGI scripts are run with sys.executable, so its environment must provide these
+    missing = []
+    for module_name in ["pymysql", "svg.charts"]:
+        try:
+            found = importlib.util.find_spec(module_name) is not None
+        except ImportError:
+            found = False
+        if not found:
+            missing.append(module_name)
+    if missing:
+        log.critical("Modules %s not available for %s (was the venv's python3 used?)", missing, sys.executable)
+        sys.exit(1)
+    log.info("All required modules are present.")
 
-    if required_modules:
-        log.error("The following required modules are missing:")
-        for missing_module in required_modules:
-            log.error("- {}".format(missing_module))
-    else:
-        log.info("All required modules are present.")
 
+CLIENT_DISCONNECTIONS = (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError, socket.timeout)
+
+# thread name -> (request line, start time), to spot requests that hang
+in_flight = {}
+in_flight_lock = threading.Lock()
+
+
+class LoggingCGIHandler(http.server.CGIHTTPRequestHandler):
+    # handler.cgi_directories = ["~/public_html/"]  # Should be better if other than '/' but never worked...
+    cgi_directories = ["/"]
+
+    def log_message(self, format, *args):
+        log.info("%s %s", self.address_string(), format % args)
+
+    def parse_request(self):
+        ok = super().parse_request()
+        with in_flight_lock:
+            in_flight[threading.current_thread().name] = (self.requestline, time.monotonic())
+        return ok
+
+    def handle_one_request(self):
+        try:
+            super().handle_one_request()
+        finally:
+            with in_flight_lock:
+                entry = in_flight.pop(threading.current_thread().name, None)
+            if entry:
+                request_line, started = entry
+                elapsed = time.monotonic() - started
+                level = logging.WARNING if elapsed >= SLOW_REQUEST_SECONDS else logging.DEBUG
+                log.log(level, "%s %r done in %.2f s", self.address_string(), request_line, elapsed)
+
+
+class LoggingHTTPServer(http.server.HTTPServer):
+    def handle_error(self, request, client_address):
+        error = sys.exc_info()[1]
+        if isinstance(error, CLIENT_DISCONNECTIONS):
+            log.info("%s disconnected: %r", client_address[0], error)
+        else:
+            log.exception("Error while handling request from %s", client_address[0])
+
+
+def heartbeat():
+    while True:
+        time.sleep(HEARTBEAT_SECONDS)
+        now = time.monotonic()
+        with in_flight_lock:
+            running = [(name, line, now - started) for name, (line, started) in in_flight.items()]
+        log.info("Heartbeat: %d thread(s), %d request(s) in progress", threading.active_count(), len(running))
+        for name, line, elapsed in running:
+            if elapsed >= SLOW_REQUEST_SECONDS:
+                log.warning("Request %r in %s running for %.0f s", line, name, elapsed)
+
+
+def log_uncaught(exc_type, exc_value, exc_traceback):
+    log.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+
+
+sys.excepthook = log_uncaught
+threading.excepthook = lambda hook_args: log.critical(
+    "Uncaught exception in thread %s", hook_args.thread.name if hook_args.thread else "?",
+    exc_info=(hook_args.exc_type, hook_args.exc_value, hook_args.exc_traceback))
 
 signal.signal(signal.SIGTERM, sigterm_handler)
 
-HOME = get_home()
+# Stacks of all threads on fatal errors, and on demand with: kill -USR1 <pid>
+fault_log = open(FAULT_LOG_FILE, "a")
+faulthandler.enable(file=fault_log, all_threads=True)
+faulthandler.register(signal.SIGUSR1, file=fault_log, all_threads=True)
 
-# Due to Logger unable to get error message details, then it has been commented.
-# Outputs will tentatively be caught by redirection on call.
-
-logging.basicConfig(
-    filename=HOME + "/susanoo-web.log",
-    level=logging.DEBUG,
-    format='%(asctime)s %(levelname)-8.8s%(name)-14s (%(process)5d) %(message)s')
-log = logging.getLogger("server3.py")
-print(f"HTTP server log is sent to '{HOME}/susanoo-web.log'.")
+print(f"HTTP server log is sent to '{LOG_FILE}'.")
 log.info("Starting ‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾")
+log.info("PID %d, Python %s; 'kill -USR1 %d' dumps all thread stacks to '%s'",
+         os.getpid(), sys.version.split()[0], os.getpid(), FAULT_LOG_FILE)
 
 check_working_dir()
 
@@ -126,17 +207,14 @@ config = get_config()
 port = config.getint('DEFAULT', 'WebServerPort', fallback=8080)
 server_address = ("", port)
 
-server = http.server.HTTPServer
-handler = http.server.CGIHTTPRequestHandler
-# handler.cgi_directories = ["~/public_html/"]  # Should be better if other than '/' but never worked...
-handler.cgi_directories = ["/"]
 log.debug("Launching server from path '{0}' on port {1}...".format(os.getcwd(), port))
-log.debug(f"Handler.cgi_directories = {handler.cgi_directories}")
+log.debug(f"Handler.cgi_directories = {LoggingCGIHandler.cgi_directories}")
 
-httpd = server(server_address, handler)
+threading.Thread(target=heartbeat, name="heartbeat", daemon=True).start()
+
+httpd = LoggingHTTPServer(server_address, LoggingCGIHandler)
 try:
     httpd.serve_forever()
 except KeyboardInterrupt:
     log.info("Keyboard interruption intercepted. Exiting gracefully...")
-    log.info("Terminating _____________________________________________\n")
     close_server()
