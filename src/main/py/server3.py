@@ -8,6 +8,7 @@ import faulthandler
 import importlib.util
 import logging
 import os
+import re
 import signal
 import socket
 import sys
@@ -126,6 +127,9 @@ def check_python_modules():
 
 CLIENT_DISCONNECTIONS = (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError, socket.timeout)
 
+# Single "bytes=first-last" range only; other forms fall back to a full 200 response
+RANGE_PATTERN = re.compile(r"bytes=(\d*)-(\d*)$")
+
 # thread name -> (request line, start time), to spot requests that hang
 in_flight = {}
 in_flight_lock = threading.Lock()
@@ -156,6 +160,56 @@ class LoggingCGIHandler(http.server.CGIHTTPRequestHandler):
                 elapsed = time.monotonic() - started
                 level = logging.WARNING if elapsed >= SLOW_REQUEST_SECONDS else logging.DEBUG
                 log.log(level, "%s %r done in %.2f s", self.address_string(), request_line, elapsed)
+
+
+    def send_head(self):
+        self.range_remaining = None
+        range_header = self.headers.get("Range")
+        match = RANGE_PATTERN.match(range_header.strip()) if range_header else None
+        if not match or match.groups() == ("", "") or self.is_cgi():
+            return super().send_head()
+        path = self.translate_path(self.path)
+        if os.path.isdir(path):
+            return super().send_head()
+        try:
+            source = open(path, "rb")
+        except OSError:
+            self.send_error(404, "File not found")
+            return None
+        size = os.fstat(source.fileno()).st_size
+        first, last = match.groups()
+        if first == "":
+            start, end = max(size - int(last), 0), size - 1
+        else:
+            start = int(first)
+            end = min(int(last), size - 1) if last else size - 1
+        if start >= size or start > end:
+            source.close()
+            self.send_response(416)
+            self.send_header("Content-Range", f"bytes */{size}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return None
+        self.send_response(206)
+        self.send_header("Content-Type", self.guess_type(path))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Content-Length", str(end - start + 1))
+        self.send_header("Last-Modified", self.date_time_string(os.fstat(source.fileno()).st_mtime))
+        self.end_headers()
+        source.seek(start)
+        self.range_remaining = end - start + 1
+        return source
+
+    def copyfile(self, source, outputfile):
+        if self.range_remaining is None:
+            return super().copyfile(source, outputfile)
+        while self.range_remaining > 0:
+            chunk = source.read(min(64 * 1024, self.range_remaining))
+            if not chunk:
+                break
+            outputfile.write(chunk)
+            self.range_remaining -= len(chunk)
 
 
 class LoggingHTTPServer(http.server.ThreadingHTTPServer):
