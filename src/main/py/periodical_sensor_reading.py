@@ -2,11 +2,13 @@
 # -*- coding: utf-8 -*-
 
 import failed_request
+import fcntl
 import hc_sr04_lib_test
 import public_html.db_module as db_module
 import logging
 import os
 import pathlib
+import pymysql
 import sensors_functions as func
 import subprocess
 import utils
@@ -54,111 +56,76 @@ def consolidate_from_raw(curs, sensor, period):
     # TODO Consolidation from raw values table must be done soon...
 
 
+REMOTE_SYNC_LOCK_FILE = utils.get_home() + "/.susanoo-remote-sync.lock"
+SYNC_BATCH_SIZE = 3000  # rows copied per remote sensor and per run: catches up a long outage in small steps
+SENSOR_PARAMETERS = ("sensor_label", "decimals", "cumulative", "unit", "consolidated")
+
+
+def acquire_remote_sync_lock():
+    """Returns the open lock file, or None when a previous run is still synchronising remotes."""
+    lock_file = open(REMOTE_SYNC_LOCK_FILE, "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)  # released by the OS when the process ends
+    except BlockingIOError:
+        lock_file.close()
+        return None
+    return lock_file
+
+
 def copy_values_from_server(sensor_dest, remote_server_src, conn_local_dest):
     (sensor_name, sensor_label_dest, decimals_dest, cumulative_dest, unit_dest,
      consolidated_dest, sensor_type_dest, filepath_last, filepath_data) = sensor_dest
     sensor_name = sensor_name.decode('ascii')
     try:
-        conn_remote_src = db_module.get_conn(host=remote_server_src)  # Connect to REMOTE PostgreSQL DB
+        conn_remote_src = db_module.get_conn(host=remote_server_src)
         log.debug("\tSuccessfully connected to remote DB at '{0}'".format(remote_server_src))
     except Exception as err:
         log.exception("\tException '{0}' when getting DB connection to '{1}'".format(err, remote_server_src))
         return
-    curs_src = conn_remote_src.cursor()
-    read_sensors_query = "SELECT sensor_label, decimals, cumulative, unit, consolidated" \
-                         "  FROM sensors" \
-                         " WHERE name='" + sensor_name + "';"
-    curs_src.execute(read_sensors_query)
-    (sensor_label_src, decimals_src, cumulative_src, unit_src, consolidated_src) = curs_src.fetchall()[0]
+    try:
+        curs_src = conn_remote_src.cursor()
+        # Never wait for a lock held on the remote (backup, migration...): next run will retry
+        curs_src.execute("SET SESSION lock_wait_timeout = 10, innodb_lock_wait_timeout = 10")
 
-    # TODO Should be moved to dedicated function "Update_sensors_param_from_src_to_dest
-    # only happens on configuration changes
-    # FIXME Below UPDATEs have no effect...
-    log.debug("\tSensor parameters: Checking consistency...")
-    if sensor_label_src != sensor_label_dest:
-        log.warning("\tUPDATING sensor_label: \tsrc='" + sensor_label_src + "'\t>>> dest='" + sensor_label_dest + "'")
-        log.info("UPDATE sensors   SET sensor_label='" + sensor_label_src + "' WHERE name='" + sensor_name + "';")
-        log.critical("NOT IMPLEMENTED!")  # FIXME NOT IMPLEMENTED!
-        # curs_src.execute("UPDATE sensors"
-        #                  "   SET sensor_label='" + sensor_label_src +
-        #                  "' WHERE name='" + sensor_name + "';")
-    if decimals_src != decimals_dest:
-        log.warning("\tUPDATING Decimals:     \tsrc='" + str(decimals_src) + "'\t>>> dest='" + str(decimals_dest) + "'")
-        curs_src.execute("UPDATE sensors"
-                         "   SET decimals=" + str(decimals_src) +
-                         " WHERE name='" + sensor_name + "';")
-    if cumulative_src != cumulative_dest:
-        log.warning(
-            "\tUPDATING cumulative: \tsrc='" + str(cumulative_src) + "'\t>>> dest='" + str(cumulative_dest) + "'")
-        curs_src.execute("UPDATE sensors"
-                         "   SET cumulative=" + str(cumulative_src) +
-                         " WHERE name='" + sensor_name + "';")
-    if unit_src != unit_dest:
-        log.warning("\tUPDATING unit: \tsrc='" + unit_src + "'\t>>> dest='" + unit_dest + "'")
-        curs_src.execute("UPDATE sensors"
-                         "   SET unit='" + unit_src +
-                         "' WHERE name='" + sensor_name + "';")
-    if consolidated_src != consolidated_dest:
-        log.warning(
-            "\tUPDATING consolidated: \tsrc='" + str(consolidated_src) + "'\t>>> dest='" + str(consolidated_dest) + "'")
-        curs_src.execute("UPDATE sensors"
-                         "   SET consolidated='" + str(consolidated_src) +
-                         "' WHERE name='" + str(sensor_name) + "';")
-    log.debug("\tSensor parameters: Checked.")
-
-    read_sensors_query = "SELECT epochtimestamp, measure" \
-                         "  FROM raw_measures" \
-                         " WHERE sensor='" + sensor_name + \
-                         "'  AND synchronised='false' " \
-                         "ORDER BY epochtimestamp asc LIMIT 3000;"  # PostgreSQL: "FETCH FIRST 10 ROWS ONLY;"
-    curs_src.execute(read_sensors_query)  # Requires ~5 seconds to execute (on remote Raspberry Pi)
-    # log.debug("\tDB src (remote): read_sensors_query executed.")
-    epochs_and_measures_from_src = curs_src.fetchall()
-    # log.debug("\tDB src (remote): .fetchall() executed.")
-    n_updates = len(epochs_and_measures_from_src)
-    if n_updates > 0:
-        insert_measures_to_dest_query = "INSERT INTO raw_measures(epochtimestamp, measure, sensor) VALUES "
-        not_first_value = False
-        for (epoch_src, measure_src) in epochs_and_measures_from_src:
-            # = epoch_and_measure  # todo once working, should be included within for declaration
-            if not_first_value:
-                insert_measures_to_dest_query = insert_measures_to_dest_query + ","
-            insert_measures_to_dest_query = insert_measures_to_dest_query \
-                                            + "(" + str(epoch_src) + ", " + str(measure_src) + ", '" \
-                                            + sensor_name + "')"
-            not_first_value = True
-        insert_measures_to_dest_query = insert_measures_to_dest_query + ";"
-        # log.debug("\tDB dest (locale): getting cursor...")
+        # The remote is the reference for the sensor parameters: copy any change to the local (dest) DB
+        curs_src.execute("SELECT " + ", ".join(SENSOR_PARAMETERS) + " FROM sensors WHERE name = %s",
+                         (sensor_name,))
+        params_src = curs_src.fetchone()
+        params_dest = (sensor_label_dest, decimals_dest, cumulative_dest, unit_dest, consolidated_dest)
         curs_dest = conn_local_dest.cursor()
-        # log.debug("\tDB dest (locale): query = " + str(len(insert_measures_to_dest_query)) + " bytes/chars")
-        # log.debug(insert_measures_to_dest_query)
-        curs_dest.execute(insert_measures_to_dest_query)
-        # log.debug("\tDB dest (locale): query executed.")
+        for column, value_src, value_dest in zip(SENSOR_PARAMETERS, params_src, params_dest):
+            if value_src != value_dest:
+                log.warning("\tUPDATING {0}: \tsrc='{1}'\t>>> dest='{2}'".format(column, value_src, value_dest))
+                curs_dest.execute("UPDATE sensors SET " + column + " = %s WHERE name = %s", (value_src, sensor_name))
 
-        update_synchronised_query = "UPDATE raw_measures" \
-                                    "   SET synchronised=true" \
-                                    " WHERE epochtimestamp IN ("
-        # PostgreSQL was "UPDATE raw_measures(synchronised) SET true"
-        not_first_value = False
-        for (epoch_src, measure_src) in epochs_and_measures_from_src:
-            if not_first_value:
-                update_synchronised_query = update_synchronised_query + ", "
-            update_synchronised_query = update_synchronised_query + str(epoch_src)
-            not_first_value = True
-        update_synchronised_query = update_synchronised_query + ") AND sensor='" + sensor_name + "'"
-        # log.debug("\tDB src (remote): query = " + str(len(update_synchronised_query)) + " bytes/chars.")
-        curs_src.execute(update_synchronised_query)
-        # log.debug("\tDB src (remote): query executed.")
-
+        curs_src.execute("SELECT  epochtimestamp, measure"
+                         "  FROM  raw_measures"
+                         " WHERE  sensor = %s AND synchronised = FALSE"
+                         " ORDER BY epochtimestamp LIMIT %s",
+                         (sensor_name, SYNC_BATCH_SIZE))
+        rows = curs_src.fetchall()
+        if rows:
+            curs_dest.executemany("INSERT INTO raw_measures (epochtimestamp, measure, sensor) VALUES (%s, %s, %s)",
+                                  [(epoch, measure, sensor_name) for (epoch, measure) in rows])
+        # Local commit first: if marking them on the remote then fails, the rows are copied again
+        # next run (duplicates) rather than lost
+        conn_local_dest.commit()
+        if rows:
+            epochs = [epoch for (epoch, measure) in rows]
+            curs_src.execute("UPDATE raw_measures SET synchronised = TRUE"
+                             " WHERE sensor = %s AND epochtimestamp IN (" + ", ".join(["%s"] * len(epochs)) + ")",
+                             [sensor_name] + epochs)
         conn_remote_src.commit()
-        # log.debug("\tDB src (remote): commited.")
-
-    conn_local_dest.commit()  # Can be an update of label name or unit, etc... without value
-    log.debug("\tDB dest (locale): commited.")
-
-    log.info("\t=> Imported '{0}' records from '{1}'.".format(n_updates, remote_server_src))
-
-    return
+        log.info("\t=> Imported '{0}' records from '{1}'.".format(len(rows), remote_server_src))
+    except Exception as err:
+        log.exception("\tError '{0}' while copying '{1}' from '{2}'".format(err, sensor_name, remote_server_src))
+        for conn in (conn_remote_src, conn_local_dest):
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+    finally:
+        conn_remote_src.close()  # releases any remote lock even after an error
 
 
 def create_folders_if_required(destination_file):
@@ -257,6 +224,7 @@ def main():  # Expected to be called once per minute
     log.info("Starting ‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾")
     temp = 15  # default value for later calculation of speed of sound
     first_remote = True
+    remote_sync_lock = None
     local_camera_name = None
 
     conn = None
@@ -336,8 +304,14 @@ def main():  # Expected to be called once per minute
             # Value of current sensor is hosted by another remote DB.
             # Values that are not "synchronised" here will be copied now.
             if first_remote:
-                sleep(5)  # give time for very last value of remote sensors to be updated
                 first_remote = False
+                remote_sync_lock = acquire_remote_sync_lock()
+                if remote_sync_lock is None:
+                    log.warning("Previous run still synchronising remote sensors: skipping them this time")
+                else:
+                    sleep(5)  # give time for very last value of remote sensors to be updated
+            if remote_sync_lock is None:
+                continue
             remote_server = sensor_type[7:]
             log.info("Remote sensor '{0}' -> reading values from '{1}'...".format(sensor_name, remote_server))
             if unit == "picture":

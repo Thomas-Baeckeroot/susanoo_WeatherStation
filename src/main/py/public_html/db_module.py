@@ -51,11 +51,15 @@ def get_conn(host=None):
         user = config.get('remote:' + host, 'User')  # Could have default fallback to os.getusername()
         password = config.get('remote:' + host, 'Password')
         port = config.getint('remote:' + host, 'Port', fallback=3306)
+        # Remote Pis may be unreachable (WiFi loss) or busy: fail instead of hanging the collector
         conn = db_module.Connect(
             host=host,
             database=database,
             user=user,
             password=password,
-            port=port)
+            port=port,
+            connect_timeout=10,
+            read_timeout=120,
+            write_timeout=120)
 
     return conn
