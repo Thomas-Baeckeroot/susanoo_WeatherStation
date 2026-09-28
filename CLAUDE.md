@@ -34,6 +34,7 @@ This project is intended to be deployed on a Raspberry Pi (or compatible Linux);
 - Tests for the data collector (`periodical_sensor_reading.py`, `consolidate_from_raw()`, `copy_values_from_server()`) with the test database; sensors mocked.
 - GitHub Action running the tests on each push (Python 3.8 to match the Synology).
 - `bin/db_check.sh` (read-only report, later an optional `--fix`) to find inconsistencies in the big tables: duplicate `(sensor, epochtimestamp)` rows in `raw_measures` (the remote sync prefers duplicates to losses), measures for unknown sensors, timestamps in the future or before the station existed, physically implausible values per sensor type, long gaps per sensor, remote rows still `synchronised = false` long after, `captures` pointing to missing files. Once cleaned, a migration adding a UNIQUE key on `(sensor, epochtimestamp)` (+ `INSERT IGNORE` in the sync) would prevent new duplicates.
+- Study how to never insert duplicates (the original design intent): today the remote sync accepts a duplicate when marking rows `synchronised` on the remote fails after the local commit, and `failed_request.py` may replay an INSERT that actually succeeded. Options: a UNIQUE key on `(sensor, epochtimestamp)` with `INSERT IGNORE` / `ON DUPLICATE KEY UPDATE` everywhere measures are inserted (local reading, remote sync, failed-request replay) — needs `db_check.sh` cleanup first and a check of the index cost on the NAS; or a sync that skips rows already present locally (e.g. only copying epochs above the local max per sensor).
 
 ## Architecture
 
