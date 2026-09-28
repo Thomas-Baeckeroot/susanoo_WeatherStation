@@ -33,6 +33,7 @@ This project is intended to be deployed on a Raspberry Pi (or compatible Linux);
 - Tests for `bin/backup.sh` (reads `[DATABASE]` from the config; fake `mysqldump` in PATH) and `bin/susanoo_WeatherStation_startWebServer.sh` (start / auto-restart / stop with temporary paths).
 - Tests for the data collector (`periodical_sensor_reading.py`, `consolidate_from_raw()`, `copy_values_from_server()`) with the test database; sensors mocked.
 - GitHub Action running the tests on each push (Python 3.8 to match the Synology).
+- `bin/db_check.sh` (read-only report, later an optional `--fix`) to find inconsistencies in the big tables: duplicate `(sensor, epochtimestamp)` rows in `raw_measures` (the remote sync prefers duplicates to losses), measures for unknown sensors, timestamps in the future or before the station existed, physically implausible values per sensor type, long gaps per sensor, remote rows still `synchronised = false` long after, `captures` pointing to missing files. Once cleaned, a migration adding a UNIQUE key on `(sensor, epochtimestamp)` (+ `INSERT IGNORE` in the sync) would prevent new duplicates.
 
 ## Architecture
 
