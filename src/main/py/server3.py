@@ -3,7 +3,6 @@
 # Sample based from https://python-django.dev/page-python-serveur-web-creer-rapidement
 
 import http.server
-import cgitb
 import faulthandler
 import importlib.util
 import logging
@@ -273,8 +272,6 @@ check_working_dir()
 check_python_modules()
 
 put_own_python_first_in_path()
-
-cgitb.enable()
 
 config = get_config()
 port = config.getint('DEFAULT', 'WebServerPort', fallback=8080)
