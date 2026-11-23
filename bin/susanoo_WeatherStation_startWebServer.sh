@@ -12,7 +12,16 @@ PID_FILE="/var/run/susanoo-web-supervisor.pid"
 # Lets the database and network come up when started at boot
 START_DELAY="${START_DELAY:-60}"
 
+# The server and its CGI scripts, run as ${WEB_USER}, log to this same file and cannot start if it belongs
+# to root: as this script runs as root, it makes sure before each of its own writes that the file exists
+# and belongs to ${WEB_USER} (it may be missing on a fresh install, or have been deleted meanwhile).
+ensure_log_file() {
+    [ -e "${LOG_FILE}" ] || touch "${LOG_FILE}"
+    chown "${WEB_USER}" "${LOG_FILE}"
+}
+
 log() {
+    ensure_log_file
     printf -- "%s - %s\n" "$(date)" "$*" >> "${LOG_FILE}"
 }
 
@@ -24,7 +33,7 @@ supervise() {
     sleep "${START_DELAY}"
     cd "${WORK_DIR}" || { log "Cannot cd to ${WORK_DIR}"; exit 1; }
     while [ -f "${PID_FILE}" ]; do
-        log "Starting meteo server from $0"
+        log "Starting meteo server from $0"  # also creates the log file for the redirection below
         started=$(date +%s)
         # The venv's python3 is called explicitly: sudo may reset PATH
         sudo -u "${WEB_USER}" env PYTHONUNBUFFERED=1 "${PY_VENV}/bin/python3" "${SERVER}" >> "${LOG_FILE}" 2>&1
