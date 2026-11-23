@@ -215,11 +215,8 @@ async function updateCurrentImage(pictureData, hh_mm) {
         makeElementNotClickable(document.getElementById("next_hh_mm"));
     }
 
-    // TODO Check consistency with picturesProperties
-    document.getElementById("error_message").textContent = picturesProperties.error_message; // TODO Implement error message display
-    if (picturesProperties.error_message !== "") {
-        alert("Error:\n" + picturesProperties.error_message);
-    }
+    // Error message of the server: displayed once per loaded day by refreshDate(), not here (called for each
+    // displayed picture, every PLAY_FRAME_MS during playback)
 
     // await updateDateData(); // NOT TO DO WITHIN .updateCurrentImage()
 }
@@ -510,6 +507,8 @@ async function refreshDate(sensor, year, month, day) {
     // Call fetchData function to get data after page loaded:
     await fetchData(sensor, year, month, day); // Wait for fetchData to complete
     console.log("\tafter fetchData call:", picturesData, picturesProperties);
+    // Kept now: updateDateData() below may replace picturesProperties
+    const serverMessage = picturesProperties.error_message || "";
     const picturesFolder = "captures/" + picturesProperties.sensor + "/";
     console.log("\tpicturesFolder =", picturesFolder);
 
@@ -527,10 +526,18 @@ async function refreshDate(sensor, year, month, day) {
     } else {
         // Change the src attribute of the main image
         document.getElementById("capture-img").src = "../html/undefined_4x3.png";
-        document.getElementById("error_message").textContent = "No pictures for this date!";
     }
+    const noPictures = lastHhMm === undefined;
+    document.getElementById("error_message").textContent =
+        ((noPictures ? "No pictures for this date! " : "") + serverMessage).trim();
 
     await updateDateData();
+
+    // Once per loaded day, after the page is filled; as before, only when pictures are shown (e.g. the server
+    // fell back to another day than the one asked)
+    if (serverMessage && !noPictures) {
+        alert("Error:\n" + serverMessage);
+    }
 }
 
 document.addEventListener("DOMContentLoaded", async function () {
