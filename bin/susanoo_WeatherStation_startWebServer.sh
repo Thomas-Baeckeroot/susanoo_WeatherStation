@@ -9,6 +9,9 @@ SERVER="/var/services/homes/meteo/meteo/src/main/py/server3.py"
 WORK_DIR="/var/services/homes/web/public_html"
 LOG_FILE="/var/services/homes/web/susanoo-web.log"
 PID_FILE="/var/run/susanoo-web-supervisor.pid"
+# Command line of the server, as started below (also part of the command line of the sudo running it).
+# stop / status match it whole, so that e.g. an editor open on server3.py is never killed.
+SERVER_COMMAND="${PY_VENV}/bin/python3 ${SERVER}"
 # Lets the database and network come up when started at boot
 START_DELAY="${START_DELAY:-60}"
 
@@ -31,7 +34,8 @@ is_running() {
 
 supervise() {
     sleep "${START_DELAY}"
-    cd "${WORK_DIR}" || { log "Cannot cd to ${WORK_DIR}"; exit 1; }
+    # No PID file left behind: its PID could later be reused by an unrelated process
+    cd "${WORK_DIR}" || { log "Cannot cd to ${WORK_DIR}"; rm -f "${PID_FILE}"; exit 1; }
     while [ -f "${PID_FILE}" ]; do
         log "Starting meteo server from $0"  # also creates the log file for the redirection below
         started=$(date +%s)
@@ -62,11 +66,11 @@ stop() {
     if [ -f "${PID_FILE}" ]; then
         supervisor=$(cat "${PID_FILE}")
         rm -f "${PID_FILE}"
-        pkill -f "${SERVER}"
+        pkill -f "${SERVER_COMMAND}"
         kill "${supervisor}" 2>/dev/null
         echo "Stopped"
     else
-        pkill -f "${SERVER}" && echo "Stopped (no supervisor)"
+        pkill -f "${SERVER_COMMAND}" && echo "Stopped (no supervisor)"
     fi
 }
 
@@ -76,7 +80,7 @@ case "$1" in
     restart) stop; sleep 2; START_DELAY=0 start ;;
     status)
         if is_running; then echo "Supervisor running (PID $(cat "${PID_FILE}"))"; else echo "Supervisor not running"; fi
-        pgrep -af "${SERVER}" || echo "Server not running"
+        pgrep -af "${SERVER_COMMAND}" || echo "Server not running"
         ;;
     *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
 esac
