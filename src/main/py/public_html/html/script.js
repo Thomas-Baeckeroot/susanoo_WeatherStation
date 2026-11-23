@@ -50,7 +50,7 @@ async function fetchData(sensor, year, month, day) {
                 "year": null,
                 "month_day": null, "error_message": err
             };
-            sortedPictures = {};
+            sortedPictures = [];  // an array, as in the other error cases: daylightHhMms() calls .filter() on it
             return;
         }
 
@@ -566,8 +566,8 @@ document.addEventListener("DOMContentLoaded", async function () {
         console.log("Using fallback date:", paramSensor, paramYear, paramMonth, paramDay);
     }
 
-    await refreshDate(paramSensor, paramYear, paramMonth, paramDay);
-
+    // Handlers are registered before the first refreshDate(): if loading the day fails, the page still reacts
+    // (both handlers ignore events until pictures are loaded)
     document.getElementById("playPause").addEventListener("click", function () {
         if (this.classList.contains("buttonEnabled")) {
             togglePlayback();
@@ -600,6 +600,8 @@ document.addEventListener("DOMContentLoaded", async function () {
                 break;
         }
     });
+
+    await refreshDate(paramSensor, paramYear, paramMonth, paramDay);
 
     console.log("DOMContentLoaded - ---DOMContentLoaded-end---");
 });
