@@ -53,6 +53,9 @@ printf -- "- PyMySQL for database connection\n\n"
 # pip3 install mariadb
 pip3 install pymysql
 
+printf -- "- legacy-cgi for the cgi and cgitb modules (removed from the standard library in Python 3.13)\n\n"
+pip3 install legacy-cgi
+
 printf -- "\n\n*** Install BMP sensors library... ***\n"
 INITIAL_DIR=$(pwd)
 cd /tmp
