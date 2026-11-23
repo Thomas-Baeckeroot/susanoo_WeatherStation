@@ -155,13 +155,16 @@ def rsync_pictures_from_server(local_sensor, remote_server_src, conn_local_dest)
     except Exception as err:
         log.error("\tException '{0}' when connecting to DB.".format(err))
         return
-    curs_src = conn_remote_src.cursor()
-    read_filepath_query = "SELECT filepath_last, filepath_data" \
-                          "  FROM captures" \
-                          " WHERE sensor_name='" + sensor_name + "';"
-    # log.debug("\tread_filepath_query = '" + read_filepath_query + "'")  # for debugging purpose
-    curs_src.execute(read_filepath_query)
-    (filepath_last_src, filepath_data_src) = curs_src.fetchall()[0]
+    try:
+        curs_src = conn_remote_src.cursor()
+        curs_src.execute("SELECT filepath_last, filepath_data FROM captures WHERE sensor_name = %s", (sensor_name,))
+        row = curs_src.fetchone()
+    finally:
+        conn_remote_src.close()  # not kept open during the copies below, which may take long
+    if row is None:
+        log.warning("\tNo picture recorded for '{0}' on '{1}': nothing to copy".format(sensor_name, remote_server_src))
+        return
+    (filepath_last_src, filepath_data_src) = row
     log.debug("\t(..._last_src  , ..._data_src  ) = (\t'" + filepath_last_src + "',\t'" + filepath_data_src + "')")
     log.debug("\t(..._last_local, ..._data_local) = (\t'" + filepath_last_local + "',\t'" + filepath_data_local + "')")
 
@@ -201,11 +204,9 @@ def rsync_pictures_from_server(local_sensor, remote_server_src, conn_local_dest)
     if cp_return_code == 0:
         log.info("\tUpdating local db with values from remote...")
         curs_dest = conn_local_dest.cursor()
-        update_last_pictures_values = "UPDATE captures" + \
-                                      "   SET filepath_last = '" + filepath_last_src + "'," + \
-                                      "       filepath_data = '" + filepath_data_src + "'" + \
-                                      " WHERE sensor_name='" + sensor_name + "';"
-        curs_dest.execute(update_last_pictures_values)
+        # Parameters: the paths come from the remote's DB
+        curs_dest.execute("UPDATE captures SET filepath_last = %s, filepath_data = %s WHERE sensor_name = %s",
+                          (filepath_last_src, filepath_data_src, sensor_name))
         conn_local_dest.commit()
         log.info("\tLocal db updated with ('" + filepath_last_src + "', '" + filepath_data_src + "').")
     else:
@@ -330,10 +331,20 @@ def main():  # Expected to be called once per minute
                                 .format(sensor_name))
                     continue
                 log.info("Remote sensor '{0}' -> reading values from '{1}'...".format(sensor_name, remote_server))
-                if unit == "picture":
-                    rsync_pictures_from_server(sensor, remote_server, conn)
-                else:
-                    copy_values_from_server(sensor, remote_server, conn)
+                try:
+                    if unit == "picture":
+                        rsync_pictures_from_server(sensor, remote_server, conn)
+                    else:
+                        copy_values_from_server(sensor, remote_server, conn)
+                except Exception as err:
+                    # An unreachable or failing remote must not abort the run: the other sensors, the local
+                    # values and the replay of failed requests below must still be done
+                    log.exception("Remote sensor '{0}': error '{1}' while synchronising from '{2}'"
+                                  .format(sensor_name, err, remote_server))
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
 
         else:
             log.info("Sensor '" + sensor_name + "' -> ERROR! Unable to interpret '" + str(sensor_type)
