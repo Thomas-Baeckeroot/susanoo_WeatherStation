@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import contextlib
 import failed_request
 import fcntl
 import hc_sr04_lib_test
@@ -56,20 +57,31 @@ def consolidate_from_raw(curs, sensor, period):
     # TODO Consolidation from raw values table must be done soon...
 
 
-REMOTE_SYNC_LOCK_FILE = utils.get_home() + "/.susanoo-remote-sync.lock"
+SYNC_LOCKS_FOLDER = utils.get_home() + "/.susanoo-sync-locks"
 SYNC_BATCH_SIZE = 3000  # rows copied per remote sensor and per run: catches up a long outage in small steps
 SENSOR_PARAMETERS = ("sensor_label", "decimals", "cumulative", "unit", "consolidated")
+# scp / rsync run from cron: never prompt, and give up on a dead link (WiFi loss) within ~1 min instead of
+# hanging until the TCP keepalive (2 h by default)
+SSH_OPTIONS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+               "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"]
+# Copy of a single picture (a few MB): also covers a remote that stays connected but stops sending
+SCP_TIMEOUT_SECONDS = 300
 
 
-def acquire_remote_sync_lock():
-    """Returns the open lock file, or None when a previous run is still synchronising remotes."""
-    lock_file = open(REMOTE_SYNC_LOCK_FILE, "w")
-    try:
-        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)  # released by the OS when the process ends
-    except BlockingIOError:
-        lock_file.close()
-        return None
-    return lock_file
+@contextlib.contextmanager
+def remote_sensor_lock(remote_server, sensor_name):
+    """Yields True when this run may synchronise this remote sensor, False while an earlier run still does.
+
+    One lock per remote sensor, held only while that sensor is synchronised: a long sync (e.g. rsync of the
+    pictures catching up after weeks of outage) makes the next runs skip that sensor only, not the others."""
+    os.makedirs(SYNC_LOCKS_FOLDER, exist_ok=True)
+    with open(os.path.join(SYNC_LOCKS_FOLDER, remote_server + "_" + sensor_name + ".lock"), "w") as lock_file:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except BlockingIOError:
+            acquired = False
+        yield acquired  # released when the file is closed, or by the OS if the process dies
 
 
 def copy_values_from_server(sensor_dest, remote_server_src, conn_local_dest):
@@ -177,10 +189,14 @@ def rsync_pictures_from_server(local_sensor, remote_server_src, conn_local_dest)
     destination_file = utils.get_home() + "/meteo/captures/" + filepath_last_src
     create_folders_if_required(destination_file)
     command = ["scp",
-               "-P", str(ssh_port),
+               "-P", str(ssh_port)] + SSH_OPTIONS + [
                rsync_user + "@" + remote_server_src + ":/home/pi/meteo/captures/" + filepath_last_src,
                destination_file]
-    cp_return_code = subprocess.call(command)
+    try:
+        cp_return_code = subprocess.call(command, timeout=SCP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:  # scp has been killed: next run will retry
+        log.error("\tscp did not complete within {0} s, command was: {1}".format(SCP_TIMEOUT_SECONDS, command))
+        return
     log.info("\tscp terminated with return code " + str(cp_return_code))
     if cp_return_code == 0:
         log.info("\tUpdating local db with values from remote...")
@@ -206,8 +222,10 @@ def rsync_pictures_from_server(local_sensor, remote_server_src, conn_local_dest)
          "--compress",  # -rav[z]
          "--size-only",
          "--perms",  # preserve permissions
-         "--rsh", "ssh -p " + str(ssh_port),
+         "--rsh", " ".join(["ssh", "-p", str(ssh_port)] + SSH_OPTIONS),
          # "--time-limit", "1",  # not working on some distros (exemple: Synology NAS)
+         # No overall time limit: catching up after a long outage may legitimately take hours
+         # (other remote sensors are still synchronised meanwhile, see remote_sensor_lock())
          "--timeout", "60",  # if network is not good, we prefer exit quickly and let next execution finishing.
          rsync_user + "@" + remote_server_src + ":/home/pi/meteo/captures/" + sensor_name + "/",
          utils.get_home() + "/meteo/captures/" + sensor_name + "/"])
@@ -224,7 +242,6 @@ def main():  # Expected to be called once per minute
     log.info("Starting ‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾")
     temp = 15  # default value for later calculation of speed of sound
     first_remote = True
-    remote_sync_lock = None
     local_camera_name = None
 
     conn = None
@@ -305,19 +322,18 @@ def main():  # Expected to be called once per minute
             # Values that are not "synchronised" here will be copied now.
             if first_remote:
                 first_remote = False
-                remote_sync_lock = acquire_remote_sync_lock()
-                if remote_sync_lock is None:
-                    log.warning("Previous run still synchronising remote sensors: skipping them this time")
-                else:
-                    sleep(5)  # give time for very last value of remote sensors to be updated
-            if remote_sync_lock is None:
-                continue
+                sleep(5)  # give time for very last value of remote sensors to be updated
             remote_server = sensor_type[7:]
-            log.info("Remote sensor '{0}' -> reading values from '{1}'...".format(sensor_name, remote_server))
-            if unit == "picture":
-                rsync_pictures_from_server(sensor, remote_server, conn)
-            else:
-                copy_values_from_server(sensor, remote_server, conn)
+            with remote_sensor_lock(remote_server, sensor_name) as acquired:
+                if not acquired:
+                    log.warning("Remote sensor '{0}': previous run still synchronising it, skipped this time"
+                                .format(sensor_name))
+                    continue
+                log.info("Remote sensor '{0}' -> reading values from '{1}'...".format(sensor_name, remote_server))
+                if unit == "picture":
+                    rsync_pictures_from_server(sensor, remote_server, conn)
+                else:
+                    copy_values_from_server(sensor, remote_server, conn)
 
         else:
             log.info("Sensor '" + sensor_name + "' -> ERROR! Unable to interpret '" + str(sensor_type)
