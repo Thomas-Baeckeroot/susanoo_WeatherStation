@@ -2,13 +2,17 @@
 # as the Python code does, and writes the credentials to a private MariaDB option file.
 CONFIG_FILE="${SUSANOO_CONFIG:-${HOME}/.config/susanoo_WeatherStation.conf}"
 
-# Prints the value of a key (case-insensitive, like Python's configparser) from the [DATABASE] section
+# Prints the value of a key (case-insensitive, like Python's configparser) from the [DATABASE] section.
+# '%%' is read as '%', as by the Python code (ConfigParser's default interpolation): a password containing
+# '%' must be written with '%%' in the config, otherwise Python fails to read it.
 db_setting() {
     awk -v key="$1" '
         /^[ \t]*\[/ { in_db = (tolower($0) ~ /^[ \t]*\[database\]/); next }
         in_db && /=/ {
             name = $0; sub(/[ \t]*=.*/, "", name); gsub(/^[ \t]+/, "", name)
-            if (tolower(name) == key) { sub(/^[^=]*=[ \t]*/, ""); sub(/[ \t\r]+$/, ""); print; exit }
+            if (tolower(name) == key) {
+                sub(/^[^=]*=[ \t]*/, ""); sub(/[ \t\r]+$/, ""); gsub(/%%/, "%"); print; exit
+            }
         }' "${CONFIG_FILE}"
 }
 
