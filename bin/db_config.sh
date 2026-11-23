@@ -32,6 +32,12 @@ chmod 600 "${DB_CREDENTIALS}"
     echo "[client]"
     echo "user=$(db_setting user)"
     echo "password=\"$(db_setting password | sed 's/\\/\\\\/g; s/"/\\"/g')\""
+    # Same connection as the Python code (pymysql, see get_conn()): TCP to localhost on the configured port,
+    # so it works wherever the data collector works (e.g. not a 'user'@'localhost' account when the server
+    # has skip_name_resolve). Without 'protocol', the mysql clients would use their compiled-in Unix socket
+    # for 'localhost' and ignore the port, possibly reaching another MariaDB instance than the Python code.
+    echo "protocol=TCP"
+    echo "host=localhost"
     DBPORT=$(db_setting port)
-    [ -n "${DBPORT}" ] && echo "port=${DBPORT}"
+    echo "port=${DBPORT:-3306}"
 } > "${DB_CREDENTIALS}"
