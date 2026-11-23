@@ -17,6 +17,9 @@ let selectedPicture = undefined;
 const PLAY_FRAME_MS = 400;
 let playTimer = undefined;
 let playing = false;
+// Incremented on each start / stop of the playback: a picture still loading for an earlier playback (stopped,
+// restarted, or of another day) is then ignored, so that only one playback loop ever runs
+let playGeneration = 0;
 
 async function fetchData(sensor, year, month, day) {
     console.log(".fetchData('" + sensor + "', '" + year + "', '" + month + "', '" + day + "') - start method");
@@ -344,6 +347,7 @@ function updatePlayButton() {
 }
 
 function stopPlayback() {
+    playGeneration++;
     if (playTimer !== undefined) {
         clearTimeout(playTimer);
         playTimer = undefined;
@@ -355,8 +359,11 @@ function stopPlayback() {
 }
 
 // Shows the next daylight picture once it is loaded, so a slow network never shows a blank frame
-function playStep() {
+function playStep(generation) {
     playTimer = undefined;
+    if (generation !== playGeneration) {
+        return;
+    }
     const frames = daylightHhMms();
     if (!playing || frames.length < 2) {
         stopPlayback();
@@ -366,11 +373,11 @@ function playStep() {
     const nextFrame = frames[(current + 1) % frames.length];  // loops back to the first one
     const preload = new Image();
     preload.onload = preload.onerror = function () {
-        if (!playing) {
+        if (generation !== playGeneration) {  // playback stopped or restarted while this picture was loading
             return;
         }
         updateCurrentImage(picturesData[nextFrame], nextFrame);
-        playTimer = setTimeout(playStep, PLAY_FRAME_MS);
+        playTimer = setTimeout(playStep, PLAY_FRAME_MS, generation);
     };
     preload.src = pictureUrl(picturesData[nextFrame]);
 }
@@ -385,8 +392,9 @@ function togglePlayback() {
         return;
     }
     playing = true;
+    playGeneration++;
     updatePlayButton();
-    playStep();
+    playStep(playGeneration);
 }
 
 function firstDaylightClickHandler() {
@@ -584,7 +592,9 @@ document.addEventListener("DOMContentLoaded", async function () {
         switch(event.key) {
             case " ":
                 event.preventDefault(); // Prevent page scrolling
-                togglePlayback();
+                if (!event.repeat) {  // a held Space key would toggle the playback on and off continuously
+                    togglePlayback();
+                }
                 break;
             case "ArrowLeft":
                 event.preventDefault(); // Prevent default browser behavior
