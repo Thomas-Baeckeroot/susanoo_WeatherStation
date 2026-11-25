@@ -69,13 +69,16 @@ SCP_TIMEOUT_SECONDS = 300
 
 
 @contextlib.contextmanager
-def remote_sensor_lock(remote_server, sensor_name):
-    """Yields True when this run may synchronise this remote sensor, False while an earlier run still does.
+def remote_sync_lock(remote_server, sensor_name, unit):
+    """Yields True when this run may synchronise this remote sensor, False while an earlier run is busy with it.
 
-    One lock per remote sensor, held only while that sensor is synchronised: a long sync (e.g. rsync of the
-    pictures catching up after weeks of outage) makes the next runs skip that sensor only, not the others."""
+    Held only while the sensor is synchronised. One lock per camera: a long rsync (pictures catching up after
+    weeks of outage) only makes the next runs skip that camera. One lock shared by all the value sensors of a
+    remote: their queries never run at the same time on it (on a slow Pi, two concurrent ~90 s scans each went
+    over the 2 min read timeout, so neither sensor was synchronised any more)."""
+    lock_name = remote_server + ("_pictures_" + sensor_name if unit == "picture" else "_values")
     os.makedirs(SYNC_LOCKS_FOLDER, exist_ok=True)
-    with open(os.path.join(SYNC_LOCKS_FOLDER, remote_server + "_" + sensor_name + ".lock"), "w") as lock_file:
+    with open(os.path.join(SYNC_LOCKS_FOLDER, lock_name + ".lock"), "w") as lock_file:
         try:
             fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
             acquired = True
@@ -226,7 +229,7 @@ def rsync_pictures_from_server(local_sensor, remote_server_src, conn_local_dest)
          "--rsh", " ".join(["ssh", "-p", str(ssh_port)] + SSH_OPTIONS),
          # "--time-limit", "1",  # not working on some distros (exemple: Synology NAS)
          # No overall time limit: catching up after a long outage may legitimately take hours
-         # (other remote sensors are still synchronised meanwhile, see remote_sensor_lock())
+         # (the values of the remotes are still synchronised meanwhile, see remote_sync_lock())
          "--timeout", "60",  # if network is not good, we prefer exit quickly and let next execution finishing.
          rsync_user + "@" + remote_server_src + ":/home/pi/meteo/captures/" + sensor_name + "/",
          utils.get_home() + "/meteo/captures/" + sensor_name + "/"])
@@ -325,10 +328,10 @@ def main():  # Expected to be called once per minute
                 first_remote = False
                 sleep(5)  # give time for very last value of remote sensors to be updated
             remote_server = sensor_type[7:]
-            with remote_sensor_lock(remote_server, sensor_name) as acquired:
+            with remote_sync_lock(remote_server, sensor_name, unit) as acquired:
                 if not acquired:
-                    log.warning("Remote sensor '{0}': previous run still synchronising it, skipped this time"
-                                .format(sensor_name))
+                    log.warning("Remote sensor '{0}': another run is synchronising {1} from '{2}', skipped this time"
+                                .format(sensor_name, "it" if unit == "picture" else "values", remote_server))
                     continue
                 log.info("Remote sensor '{0}' -> reading values from '{1}'...".format(sensor_name, remote_server))
                 try:
