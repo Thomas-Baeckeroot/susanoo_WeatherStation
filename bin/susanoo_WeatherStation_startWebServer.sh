@@ -9,23 +9,19 @@ SERVER="/var/services/homes/meteo/meteo/src/main/py/server3.py"
 WORK_DIR="/var/services/homes/web/public_html"
 LOG_FILE="/var/services/homes/web/susanoo-web.log"
 PID_FILE="/var/run/susanoo-web-supervisor.pid"
-# Command line of the server, as started below (also part of the command line of the sudo running it).
-# stop / status match it whole, so that e.g. an editor open on server3.py is never killed.
+# Command line of the server, as started below (also part of the command lines of the sudo / env / sh
+# starting it). stop / status match it whole, so that e.g. an editor open on server3.py is never killed.
 SERVER_COMMAND="${PY_VENV}/bin/python3 ${SERVER}"
 # Lets the database and network come up when started at boot
 START_DELAY="${START_DELAY:-60}"
 
-# The server and its CGI scripts, run as ${WEB_USER}, log to this same file and cannot start if it belongs
-# to root: as this script runs as root, it makes sure before each of its own writes that the file exists
-# and belongs to ${WEB_USER} (it may be missing on a fresh install, or have been deleted meanwhile).
-ensure_log_file() {
-    [ -e "${LOG_FILE}" ] || touch "${LOG_FILE}"
-    chown "${WEB_USER}" "${LOG_FILE}"
-}
-
+# The log is shared with the server and its CGI scripts (run as ${WEB_USER}) and lives in the home folder of
+# ${WEB_USER}: although this script runs as root, it only ever writes the log as ${WEB_USER}. Root opening,
+# creating or chown-ing a path in a folder ${WEB_USER} controls would follow a symlink planted there, letting
+# ${WEB_USER} write to (or take) any file. Written as ${WEB_USER}, the log also gets the right owner when it
+# is created (fresh install, or deleted meanwhile).
 log() {
-    ensure_log_file
-    printf -- "%s - %s\n" "$(date)" "$*" >> "${LOG_FILE}"
+    printf -- "%s - %s\n" "$(date)" "$*" | sudo -u "${WEB_USER}" tee -a "${LOG_FILE}" > /dev/null
 }
 
 is_running() {
@@ -37,10 +33,12 @@ supervise() {
     # No PID file left behind: its PID could later be reused by an unrelated process
     cd "${WORK_DIR}" || { log "Cannot cd to ${WORK_DIR}"; rm -f "${PID_FILE}"; exit 1; }
     while [ -f "${PID_FILE}" ]; do
-        log "Starting meteo server from $0"  # also creates the log file for the redirection below
+        log "Starting meteo server from $0"
         started=$(date +%s)
-        # The venv's python3 is called explicitly: sudo may reset PATH
-        sudo -u "${WEB_USER}" env PYTHONUNBUFFERED=1 "${PY_VENV}/bin/python3" "${SERVER}" >> "${LOG_FILE}" 2>&1
+        # The venv's python3 is called explicitly: sudo may reset PATH. The output redirection is opened by the
+        # sh run as ${WEB_USER} (see log() above), which then becomes the server (exec).
+        sudo -u "${WEB_USER}" env PYTHONUNBUFFERED=1 sh -c 'exec "$1" "$2" >> "$3" 2>&1' sh \
+            "${PY_VENV}/bin/python3" "${SERVER}" "${LOG_FILE}"
         exit_code=$?
         [ -f "${PID_FILE}" ] || break
         # Back off when it dies right away (e.g. broken venv) to avoid flooding the log
@@ -56,6 +54,10 @@ start() {
         echo "Already running (supervisor PID $(cat "${PID_FILE}"))"
         return 0
     fi
+    # Said here, where someone reads the output: the server cannot start if ${WEB_USER} cannot write its log
+    # (e.g. a file left owned by root by an older version of this script: chown it to ${WEB_USER} once).
+    log "Supervisor started by $0" 2> /dev/null \
+        || echo "Warning: ${WEB_USER} cannot write ${LOG_FILE}, the server will not start" >&2
     echo $$ > "${PID_FILE}"
     supervise < /dev/null > /dev/null 2>&1 &
     echo $! > "${PID_FILE}"
@@ -80,7 +82,8 @@ case "$1" in
     restart) stop; sleep 2; START_DELAY=0 start ;;
     status)
         if is_running; then echo "Supervisor running (PID $(cat "${PID_FILE}"))"; else echo "Supervisor not running"; fi
-        pgrep -af "${SERVER_COMMAND}" || echo "Server not running"
+        # No pgrep on Synology DSM. The second grep drops the first one, whose command line contains the pattern.
+        ps -eo user,pid,args | grep -F -- "${SERVER_COMMAND}" | grep -v -F -- "grep -F" || echo "Server not running"
         ;;
     *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
 esac
