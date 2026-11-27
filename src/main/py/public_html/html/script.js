@@ -272,12 +272,14 @@ async function fillPictureSelectorHhMm(hh_mm, pictureData) {
 
     hh_mm_element.textContent = mm;
 
-    // console.log("DOMContentLoaded - addEventListener: '" + hh_mm + "' -> '" + pictureData + "'")
-    hh_mm_element.addEventListener("click", function () {
-        stopPlayback();
-        updateCurrentImage(pictureData, hh_mm);
-    });
-    // Add an event listener to each table cell
+    // The cell keeps the picture it shows for the loaded day, read by a single click listener added once:
+    // listeners added at each refreshDate() used to pile up, and a cell without picture on the loaded day
+    // still showed the picture of an earlier day (a broken image, as from the wrong day folder).
+    hh_mm_element.pictureEntry = {pictureData: pictureData, hh_mm: hh_mm};
+    if (!hh_mm_element.hasPictureClickListener) {
+        hh_mm_element.hasPictureClickListener = true;
+        hh_mm_element.addEventListener("click", pictureCellClicked);
+    }
 
     hh_mm_element.classList.remove("no-picture-cell");
     if (pictureData.fSize < SIZE_LIMIT) {
@@ -291,20 +293,21 @@ async function fillPictureSelectorHhMm(hh_mm, pictureData) {
     makeElementClickable(hh_mm_element);
 }
 
+function pictureCellClicked(event) {
+    const entry = event.currentTarget.pictureEntry;
+    if (entry === undefined) {  // no picture in this cell for the loaded day
+        return;
+    }
+    stopPlayback();
+    updateCurrentImage(entry.pictureData, entry.hh_mm);
+}
+
+// The hover highlight comes from the CSS (.buttonEnabled:hover): no mouseover / mouseout listeners, which piled
+// up at each call and could not be removed (makeElementNotClickable() passed new anonymous functions), so a
+// disabled element kept being highlighted.
 function makeElementClickable(element) {
     console.log(".makeElementClickable(-> element.id='" + element.id + "')");
     element.style.cursor = "pointer";
-
-    // todo Replaceable with .buttonEnabled ?
-    // Add a mouseover event listener
-    element.addEventListener("mouseover", function () {
-        element.classList.add("hovered-cell");
-    });
-    // Add a mouseout event listener
-    element.addEventListener("mouseout", function () {
-        element.classList.remove("hovered-cell");
-    });
-
     element.classList.remove("buttonDisabled");
     element.classList.add("buttonEnabled");
 }
@@ -312,14 +315,6 @@ function makeElementClickable(element) {
 function makeElementNotClickable(element) {
     console.log(".makeElementNotClickable(...)");
     element.style.cursor = "default";
-
-    // Remove mouseover event listener
-    element.removeEventListener("mouseover", function () {
-    });
-    // Add a mouseout event listener
-    element.removeEventListener("mouseout", function () {
-    });
-
     element.classList.remove("buttonEnabled");
     element.classList.add("buttonDisabled");
 }
@@ -478,7 +473,12 @@ async function clearData() {
             const formattedMinute = minute.toString().padStart(2, '0');
             // Create the time string
             const hh_mm = `${formattedHour}h${formattedMinute}`;
-            document.getElementById(hh_mm).textContent = "—";
+            const hh_mm_element = document.getElementById(hh_mm);
+            hh_mm_element.textContent = "—";
+            // No picture until fillPictureSelectorHhMm() sets one for the new day: clicks do nothing
+            hh_mm_element.pictureEntry = undefined;
+            hh_mm_element.classList.remove("buttonEnabled");
+            hh_mm_element.style.cursor = "default";
         }
     }
 
