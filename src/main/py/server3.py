@@ -275,9 +275,12 @@ put_own_python_first_in_path()
 
 config = get_config()
 port = config.getint('DEFAULT', 'WebServerPort', fallback=8080)
-server_address = ("", port)
+# Address to listen on: all interfaces by default (the station's web UI is meant to be reached from the LAN);
+# e.g. 127.0.0.1 for tests and local development, so the server is not exposed to the network
+host = config.get('DEFAULT', 'WebServerHost', fallback='')
+server_address = (host, port)
 
-log.debug("Launching server from path '{0}' on port {1}...".format(os.getcwd(), port))
+log.debug("Launching server from path '{0}' on {1}:{2}...".format(os.getcwd(), host or '*', port))
 log.debug(f"Handler.cgi_directories = {LoggingCGIHandler.cgi_directories}")
 
 threading.Thread(target=heartbeat, name="heartbeat", daemon=True).start()

@@ -57,7 +57,8 @@ def make_home():
 def start_server(home, python=sys.executable, python_args=(), path=None):
     port = free_port()
     with open(os.path.join(home, ".config", "susanoo_WeatherStation.conf"), "w") as config:
-        config.write("[DEFAULT]\nWebServerPort = %d\n" % port)
+        # Loopback only: the test server must not be reachable from the LAN
+        config.write("[DEFAULT]\nWebServerPort = %d\nWebServerHost = 127.0.0.1\n" % port)
     env = dict(os.environ, HOME=home)
     if path is not None:
         env["PATH"] = path
