@@ -24,8 +24,11 @@ log() {
     printf -- "%s - %s\n" "$(date)" "$*" | sudo -u "${WEB_USER}" tee -a "${LOG_FILE}" > /dev/null
 }
 
+# The PID file can outlive the supervisor (killed by SIGKILL or the OOM killer) and its PID be reused later by
+# an unrelated process: only trust it while that process is still this script (the supervisor is a fork of it,
+# with the same command line, e.g. 'bash /usr/local/etc/rc.d/weatherStationWeb.sh start').
 is_running() {
-    [ -f "${PID_FILE}" ] && kill -0 "$(cat "${PID_FILE}")" 2>/dev/null
+    [ -f "${PID_FILE}" ] && ps -p "$(cat "${PID_FILE}")" -o args= 2>/dev/null | grep -q -F -- "$(basename "$0")"
 }
 
 supervise() {
@@ -64,12 +67,15 @@ start() {
     echo "Started (supervisor PID $!), server starts in ${START_DELAY} s"
 }
 
+# Synology DSM has pkill (procps-ng), only pgrep is missing (see status below).
 stop() {
     if [ -f "${PID_FILE}" ]; then
-        supervisor=$(cat "${PID_FILE}")
+        supervisor=""
+        if is_running; then supervisor=$(cat "${PID_FILE}"); fi
+        # Without the PID file, a supervisor not killed below (stale PID file) stops once its server is gone
         rm -f "${PID_FILE}"
         pkill -f "${SERVER_COMMAND}"
-        kill "${supervisor}" 2>/dev/null
+        [ -n "${supervisor}" ] && kill "${supervisor}" 2>/dev/null
         echo "Stopped"
     else
         pkill -f "${SERVER_COMMAND}" && echo "Stopped (no supervisor)"
