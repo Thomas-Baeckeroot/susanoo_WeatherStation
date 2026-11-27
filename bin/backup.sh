@@ -15,13 +15,18 @@ if [ ! -d "${BACKUP_DIR}" ] || [ ! -w "${BACKUP_DIR}" ]; then
     exit 1
 fi
 DUMP_FILE="${BACKUP_DIR}/mysqldump_${DBNAME}_${DATE}.sql"
+MYSQLDUMP="${MYSQLDUMP:-mysqldump}"
+# Synology's MariaDB package client is not always in PATH (as in db_migrate.sh)
+if ! command -v "${MYSQLDUMP}" > /dev/null && [ -x /usr/local/mariadb10/bin/mysqldump ]; then
+    MYSQLDUMP=/usr/local/mariadb10/bin/mysqldump
+fi
 
 # Option --show-progress-size not available yet on mysqldump v10.19
 # --single-transaction: consistent snapshot of the (InnoDB) tables without locking them. By default, mysqldump
 # holds LOCK TABLES ... READ during the whole dump (minutes on the NAS), blocking the collector's inserts and
 # the remote sync meanwhile. Rows are streamed (--quick, part of the default --opt).
 # A dump that failed halfway is removed: it would look like a backup, without the tables after the failure
-nice -n 19 mysqldump --defaults-extra-file="${DB_CREDENTIALS}" --single-transaction --databases "${DBNAME}" \
+nice -n 19 "${MYSQLDUMP}" --defaults-extra-file="${DB_CREDENTIALS}" --single-transaction --databases "${DBNAME}" \
     > "${DUMP_FILE}" || { rm -f "${DUMP_FILE}"; exit 1; }
 nice -n 19 gzip -f "${DUMP_FILE}" || exit 1
 echo "Backup written to ${DUMP_FILE}.gz"
