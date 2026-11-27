@@ -24,11 +24,13 @@ log() {
     printf -- "%s - %s\n" "$(date)" "$*" | sudo -u "${WEB_USER}" tee -a "${LOG_FILE}" > /dev/null
 }
 
-# The PID file can outlive the supervisor (killed by SIGKILL or the OOM killer) and its PID be reused later by
-# an unrelated process: only trust it while that process is still this script (the supervisor is a fork of it,
-# with the same command line, e.g. 'bash /usr/local/etc/rc.d/weatherStationWeb.sh start').
+# The supervisor runs as its own process, '<bash> <this script> __supervise' (see start()). The PID file can
+# outlive it (killed by SIGKILL or the OOM killer) and its PID be reused later by an unrelated process: only trust
+# it while that process still has this marker argument. A fixed marker, not this script's name: the repository
+# copy and the rc.d copy (different names) must recognise each other's supervisor.
+SUPERVISOR_MARKER="__supervise"
 is_running() {
-    [ -f "${PID_FILE}" ] && ps -p "$(cat "${PID_FILE}")" -o args= 2>/dev/null | grep -q -F -- "$(basename "$0")"
+    [ -f "${PID_FILE}" ] && ps -p "$(cat "${PID_FILE}")" -o args= 2>/dev/null | grep -q -E -- " ${SUPERVISOR_MARKER}\$"
 }
 
 supervise() {
@@ -61,8 +63,8 @@ start() {
     # (e.g. a file left owned by root by an older version of this script: chown it to ${WEB_USER} once).
     log "Supervisor started by $0" 2> /dev/null \
         || echo "Warning: ${WEB_USER} cannot write ${LOG_FILE}, the server will not start" >&2
-    echo $$ > "${PID_FILE}"
-    supervise < /dev/null > /dev/null 2>&1 &
+    echo $$ > "${PID_FILE}"  # the supervisor's loop runs while this file exists
+    START_DELAY="${START_DELAY}" "${BASH:-bash}" "$0" "${SUPERVISOR_MARKER}" < /dev/null > /dev/null 2>&1 &
     echo $! > "${PID_FILE}"
     echo "Started (supervisor PID $!), server starts in ${START_DELAY} s"
 }
@@ -86,6 +88,7 @@ case "$1" in
     start|"") start ;;
     stop) stop ;;
     restart) stop; sleep 2; START_DELAY=0 start ;;
+    "${SUPERVISOR_MARKER}") supervise ;;  # started by start() only
     status)
         if is_running; then echo "Supervisor running (PID $(cat "${PID_FILE}"))"; else echo "Supervisor not running"; fi
         # No pgrep on Synology DSM. The second grep drops the first one, whose command line contains the pattern.
