@@ -59,7 +59,7 @@ def get_conn(host=None):
             password=password,
             port=port,
             connect_timeout=10,
-            read_timeout=120,
+            read_timeout=300,  # above max_statement_time of copy_values_from_server()
             write_timeout=120)
 
     return conn

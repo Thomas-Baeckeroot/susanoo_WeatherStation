@@ -100,12 +100,14 @@ def copy_values_from_server(sensor_dest, remote_server_src, conn_local_dest):
     try:
         curs_src = conn_remote_src.cursor()
         # Never wait for a lock held on the remote (backup, migration...): next run will retry.
-        # max_statement_time (MariaDB >= 10.1): the remote aborts a query itself before the 120 s read_timeout
-        # of get_conn(). Otherwise, as MariaDB only notices a gone client when it sends rows, a long scan (e.g.
-        # a Pi without the sync index of migration 002) would go on after the timeout, while the lock of
-        # remote_sync_lock() is released and the next run starts the same scan alongside it.
+        # max_statement_time (MariaDB >= 10.1): the remote aborts a query itself before the 300 s read_timeout
+        # of get_conn(). Otherwise, as MariaDB only notices a gone client when it sends rows, a long scan would go
+        # on after the timeout, while the lock of remote_sync_lock() is released and the next run starts the same
+        # scan alongside it. Generous on purpose: without the sync index of migration 002, the scan of a Pi takes
+        # minutes (75-90 s seen on grangette, growing with its history), and a lower limit would stop that
+        # sensor's synchronisation for good where it used to work, only slowly.
         curs_src.execute("SET SESSION lock_wait_timeout = 10, innodb_lock_wait_timeout = 10,"
-                         " max_statement_time = 100")
+                         " max_statement_time = 280")
 
         # Sensor parameters: the local (dest) values win, as they are the ones displayed here and are curated on
         # the master (e.g. 'Température CPU (centrale)' on the NAS for a Pi's 'temp. CPU', telling the CPUs of
