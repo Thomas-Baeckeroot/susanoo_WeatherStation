@@ -210,13 +210,7 @@ def rsync_pictures_from_server(local_sensor, remote_server_src, conn_local_dest)
                "-P", str(ssh_port)] + SSH_OPTIONS + [
                rsync_user + "@" + remote_server_src + ":/home/pi/meteo/captures/" + filepath_last_src,
                destination_file]
-    try:
-        cp_return_code = subprocess.call(command, timeout=SCP_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:  # scp has been killed: next run will retry
-        log.error("\tscp did not complete within {0} s, command was: {1}".format(SCP_TIMEOUT_SECONDS, command))
-        return
-    log.info("\tscp terminated with return code " + str(cp_return_code))
-    if cp_return_code == 0:
+    def update_local_captures():
         log.info("\tUpdating local db with values from remote...")
         curs_dest = conn_local_dest.cursor()
         # Parameters: the paths come from the remote's DB
@@ -224,7 +218,19 @@ def rsync_pictures_from_server(local_sensor, remote_server_src, conn_local_dest)
                           (filepath_last_src, filepath_data_src, sensor_name))
         conn_local_dest.commit()
         log.info("\tLocal db updated with ('" + filepath_last_src + "', '" + filepath_data_src + "').")
-    else:
+
+    try:
+        cp_return_code = subprocess.call(command, timeout=SCP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        # scp has been killed (e.g. weak WiFi, the picture needs more than SCP_TIMEOUT_SECONDS): rsync below, which
+        # only gives up after 60 s without any transfer, still copies the pictures, this one included. Returning
+        # here instead would retry the same scp at every run, and never synchronise that camera any more.
+        log.error("\tscp did not complete within {0} s, command was: {1}".format(SCP_TIMEOUT_SECONDS, command))
+        cp_return_code = None
+    log.info("\tscp terminated with return code " + str(cp_return_code))
+    if cp_return_code == 0:
+        update_local_captures()
+    elif cp_return_code is not None:
         log.info("\tAn error occured, command was: " + str(command))
         # For more details, add verbosity to command with option '-v'
         # Return codes can be seen there: https://support.microfocus.com/kb/doc.php?id=7021696
@@ -249,6 +255,8 @@ def rsync_pictures_from_server(local_sensor, remote_server_src, conn_local_dest)
         log.error("\trsync returned code '" + str(rsync_return_code) + "' different from success '0'...")
     else:
         log.info("\tLocal and remote folder are successfully synchronised.")
+        if cp_return_code != 0:  # the newest picture came with rsync: next runs need not copy it again
+            update_local_captures()
         # TODO set new values 'folder_synchronised' in table 'captures'
     return
 
