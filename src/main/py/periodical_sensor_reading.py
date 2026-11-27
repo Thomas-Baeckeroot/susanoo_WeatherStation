@@ -377,6 +377,20 @@ def main():  # Expected to be called once per minute
 
     # end of for-loop on each sensor
 
+    # The remote syncs may have lasted hours (rsync of pictures catching up after an outage): past the server's
+    # wait_timeout (8 h by default), the local connection is closed and the inserts, the picture update and the
+    # replay below would fail: open a new one (pymysql's ping(reconnect=True) is deprecated).
+    if conn is not None:
+        try:
+            conn.ping(reconnect=False)
+        except Exception as err:
+            log.warning("Local database connection lost during the remote syncs ({0}): reconnecting".format(err))
+            try:
+                conn = db_module.get_conn()
+                curs = conn.cursor()
+            except Exception as err:
+                log.warning("Local database connection not restored: {0}".format(err))
+
     # Add values to database
     if values:
         sql_insert = "INSERT INTO raw_measures(epochtimestamp, measure, sensor) VALUES " \
