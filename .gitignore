@@ -6,6 +6,7 @@ captures/
 meteo.ini
 meteo.db
 failed_request.sql
+failed_request.sql.lock
 src/main/py/public_html/index.html
 src/main/py/public_html/graph.svg
 src/main/py/public_html/capture.html
