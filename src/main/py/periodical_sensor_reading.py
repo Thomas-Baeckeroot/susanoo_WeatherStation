@@ -107,16 +107,23 @@ def copy_values_from_server(sensor_dest, remote_server_src, conn_local_dest):
         curs_src.execute("SET SESSION lock_wait_timeout = 10, innodb_lock_wait_timeout = 10,"
                          " max_statement_time = 100")
 
-        # The remote is the reference for the sensor parameters: copy any change to the local (dest) DB
+        # Sensor parameters: the local (dest) values win, as they are the ones displayed here and are curated on
+        # the master (e.g. 'Température CPU (centrale)' on the NAS for a Pi's 'temp. CPU', telling the CPUs of
+        # the two Pis apart). A remote value only fills a local one that is missing; never a NULL, nor the text
+        # 'None' that a Pi has in 'consolidated'.
         curs_src.execute("SELECT " + ", ".join(SENSOR_PARAMETERS) + " FROM sensors WHERE name = %s",
                          (sensor_name,))
-        params_src = curs_src.fetchone()
+        params_src = curs_src.fetchone() or ()  # no row on the remote: its values are still copied below
         params_dest = (sensor_label_dest, decimals_dest, cumulative_dest, unit_dest, consolidated_dest)
         curs_dest = conn_local_dest.cursor()
         for column, value_src, value_dest in zip(SENSOR_PARAMETERS, params_src, params_dest):
-            if value_src != value_dest:
-                log.warning("\tUPDATING {0}: \tsrc='{1}'\t>>> dest='{2}'".format(column, value_src, value_dest))
+            if value_dest in (None, "") and value_src not in (None, "", "None"):
+                log.warning("\tSetting missing {0} of '{1}' from '{2}': '{3}'"
+                            .format(column, sensor_name, remote_server_src, value_src))
                 curs_dest.execute("UPDATE sensors SET " + column + " = %s WHERE name = %s", (value_src, sensor_name))
+            elif value_src != value_dest:
+                log.debug("\t{0} differs on '{1}': '{2}', kept '{3}'"
+                          .format(column, remote_server_src, value_src, value_dest))
 
         curs_src.execute("SELECT  epochtimestamp, measure"
                          "  FROM  raw_measures"
