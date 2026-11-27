@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import contextlib
 import failed_request
+import fcntl
 import hc_sr04_lib_test
 import public_html.db_module as db_module
 import logging
 import os
 import pathlib
+import pymysql
 import sensors_functions as func
 import subprocess
 import utils
@@ -54,111 +57,104 @@ def consolidate_from_raw(curs, sensor, period):
     # TODO Consolidation from raw values table must be done soon...
 
 
+SYNC_LOCKS_FOLDER = utils.get_home() + "/.susanoo-sync-locks"
+SYNC_BATCH_SIZE = 3000  # rows copied per remote sensor and per run: catches up a long outage in small steps
+SENSOR_PARAMETERS = ("sensor_label", "decimals", "cumulative", "unit", "consolidated")
+# scp / rsync run from cron: never prompt, and give up on a dead link (WiFi loss) within ~1 min instead of
+# hanging until the TCP keepalive (2 h by default)
+SSH_OPTIONS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+               "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"]
+# Copy of a single picture (a few MB): also covers a remote that stays connected but stops sending
+SCP_TIMEOUT_SECONDS = 300
+
+
+@contextlib.contextmanager
+def remote_sync_lock(remote_server, sensor_name, unit):
+    """Yields True when this run may synchronise this remote sensor, False while an earlier run is busy with it.
+
+    Held only while the sensor is synchronised. One lock per camera: a long rsync (pictures catching up after
+    weeks of outage) only makes the next runs skip that camera. One lock shared by all the value sensors of a
+    remote: their queries never run at the same time on it (on a slow Pi, two concurrent ~90 s scans each went
+    over the 2 min read timeout, so neither sensor was synchronised any more)."""
+    lock_name = remote_server + ("_pictures_" + sensor_name if unit == "picture" else "_values")
+    os.makedirs(SYNC_LOCKS_FOLDER, exist_ok=True)
+    with open(os.path.join(SYNC_LOCKS_FOLDER, lock_name + ".lock"), "w") as lock_file:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except BlockingIOError:
+            acquired = False
+        yield acquired  # released when the file is closed, or by the OS if the process dies
+
+
 def copy_values_from_server(sensor_dest, remote_server_src, conn_local_dest):
     (sensor_name, sensor_label_dest, decimals_dest, cumulative_dest, unit_dest,
      consolidated_dest, sensor_type_dest, filepath_last, filepath_data) = sensor_dest
     sensor_name = sensor_name.decode('ascii')
     try:
-        conn_remote_src = db_module.get_conn(host=remote_server_src)  # Connect to REMOTE PostgreSQL DB
+        conn_remote_src = db_module.get_conn(host=remote_server_src)
         log.debug("\tSuccessfully connected to remote DB at '{0}'".format(remote_server_src))
     except Exception as err:
         log.exception("\tException '{0}' when getting DB connection to '{1}'".format(err, remote_server_src))
         return
-    curs_src = conn_remote_src.cursor()
-    read_sensors_query = "SELECT sensor_label, decimals, cumulative, unit, consolidated" \
-                         "  FROM sensors" \
-                         " WHERE name='" + sensor_name + "';"
-    curs_src.execute(read_sensors_query)
-    (sensor_label_src, decimals_src, cumulative_src, unit_src, consolidated_src) = curs_src.fetchall()[0]
+    try:
+        curs_src = conn_remote_src.cursor()
+        # Never wait for a lock held on the remote (backup, migration...): next run will retry.
+        # max_statement_time (MariaDB >= 10.1): the remote aborts a query itself before the 300 s read_timeout
+        # of get_conn(). Otherwise, as MariaDB only notices a gone client when it sends rows, a long scan would go
+        # on after the timeout, while the lock of remote_sync_lock() is released and the next run starts the same
+        # scan alongside it. Generous on purpose: without the sync index of migration 002, the scan of a Pi takes
+        # minutes (75-90 s seen on grangette, growing with its history), and a lower limit would stop that
+        # sensor's synchronisation for good where it used to work, only slowly.
+        curs_src.execute("SET SESSION lock_wait_timeout = 10, innodb_lock_wait_timeout = 10,"
+                         " max_statement_time = 280")
 
-    # TODO Should be moved to dedicated function "Update_sensors_param_from_src_to_dest
-    # only happens on configuration changes
-    # FIXME Below UPDATEs have no effect...
-    log.debug("\tSensor parameters: Checking consistency...")
-    if sensor_label_src != sensor_label_dest:
-        log.warning("\tUPDATING sensor_label: \tsrc='" + sensor_label_src + "'\t>>> dest='" + sensor_label_dest + "'")
-        log.info("UPDATE sensors   SET sensor_label='" + sensor_label_src + "' WHERE name='" + sensor_name + "';")
-        log.critical("NOT IMPLEMENTED!")  # FIXME NOT IMPLEMENTED!
-        # curs_src.execute("UPDATE sensors"
-        #                  "   SET sensor_label='" + sensor_label_src +
-        #                  "' WHERE name='" + sensor_name + "';")
-    if decimals_src != decimals_dest:
-        log.warning("\tUPDATING Decimals:     \tsrc='" + str(decimals_src) + "'\t>>> dest='" + str(decimals_dest) + "'")
-        curs_src.execute("UPDATE sensors"
-                         "   SET decimals=" + str(decimals_src) +
-                         " WHERE name='" + sensor_name + "';")
-    if cumulative_src != cumulative_dest:
-        log.warning(
-            "\tUPDATING cumulative: \tsrc='" + str(cumulative_src) + "'\t>>> dest='" + str(cumulative_dest) + "'")
-        curs_src.execute("UPDATE sensors"
-                         "   SET cumulative=" + str(cumulative_src) +
-                         " WHERE name='" + sensor_name + "';")
-    if unit_src != unit_dest:
-        log.warning("\tUPDATING unit: \tsrc='" + unit_src + "'\t>>> dest='" + unit_dest + "'")
-        curs_src.execute("UPDATE sensors"
-                         "   SET unit='" + unit_src +
-                         "' WHERE name='" + sensor_name + "';")
-    if consolidated_src != consolidated_dest:
-        log.warning(
-            "\tUPDATING consolidated: \tsrc='" + str(consolidated_src) + "'\t>>> dest='" + str(consolidated_dest) + "'")
-        curs_src.execute("UPDATE sensors"
-                         "   SET consolidated='" + str(consolidated_src) +
-                         "' WHERE name='" + str(sensor_name) + "';")
-    log.debug("\tSensor parameters: Checked.")
-
-    read_sensors_query = "SELECT epochtimestamp, measure" \
-                         "  FROM raw_measures" \
-                         " WHERE sensor='" + sensor_name + \
-                         "'  AND synchronised='false' " \
-                         "ORDER BY epochtimestamp asc LIMIT 3000;"  # PostgreSQL: "FETCH FIRST 10 ROWS ONLY;"
-    curs_src.execute(read_sensors_query)  # Requires ~5 seconds to execute (on remote Raspberry Pi)
-    # log.debug("\tDB src (remote): read_sensors_query executed.")
-    epochs_and_measures_from_src = curs_src.fetchall()
-    # log.debug("\tDB src (remote): .fetchall() executed.")
-    n_updates = len(epochs_and_measures_from_src)
-    if n_updates > 0:
-        insert_measures_to_dest_query = "INSERT INTO raw_measures(epochtimestamp, measure, sensor) VALUES "
-        not_first_value = False
-        for (epoch_src, measure_src) in epochs_and_measures_from_src:
-            # = epoch_and_measure  # todo once working, should be included within for declaration
-            if not_first_value:
-                insert_measures_to_dest_query = insert_measures_to_dest_query + ","
-            insert_measures_to_dest_query = insert_measures_to_dest_query \
-                                            + "(" + str(epoch_src) + ", " + str(measure_src) + ", '" \
-                                            + sensor_name + "')"
-            not_first_value = True
-        insert_measures_to_dest_query = insert_measures_to_dest_query + ";"
-        # log.debug("\tDB dest (locale): getting cursor...")
+        # Sensor parameters: the local (dest) values win, as they are the ones displayed here and are curated on
+        # the master (e.g. 'Température CPU (centrale)' on the NAS for a Pi's 'temp. CPU', telling the CPUs of
+        # the two Pis apart). A remote value only fills a local one that is missing; never a NULL, nor the text
+        # 'None' that a Pi has in 'consolidated'.
+        curs_src.execute("SELECT " + ", ".join(SENSOR_PARAMETERS) + " FROM sensors WHERE name = %s",
+                         (sensor_name,))
+        params_src = curs_src.fetchone() or ()  # no row on the remote: its values are still copied below
+        params_dest = (sensor_label_dest, decimals_dest, cumulative_dest, unit_dest, consolidated_dest)
         curs_dest = conn_local_dest.cursor()
-        # log.debug("\tDB dest (locale): query = " + str(len(insert_measures_to_dest_query)) + " bytes/chars")
-        # log.debug(insert_measures_to_dest_query)
-        curs_dest.execute(insert_measures_to_dest_query)
-        # log.debug("\tDB dest (locale): query executed.")
+        for column, value_src, value_dest in zip(SENSOR_PARAMETERS, params_src, params_dest):
+            if value_dest in (None, "") and value_src not in (None, "", "None"):
+                log.warning("\tSetting missing {0} of '{1}' from '{2}': '{3}'"
+                            .format(column, sensor_name, remote_server_src, value_src))
+                curs_dest.execute("UPDATE sensors SET " + column + " = %s WHERE name = %s", (value_src, sensor_name))
+            elif value_src != value_dest:
+                log.debug("\t{0} differs on '{1}': '{2}', kept '{3}'"
+                          .format(column, remote_server_src, value_src, value_dest))
 
-        update_synchronised_query = "UPDATE raw_measures" \
-                                    "   SET synchronised=true" \
-                                    " WHERE epochtimestamp IN ("
-        # PostgreSQL was "UPDATE raw_measures(synchronised) SET true"
-        not_first_value = False
-        for (epoch_src, measure_src) in epochs_and_measures_from_src:
-            if not_first_value:
-                update_synchronised_query = update_synchronised_query + ", "
-            update_synchronised_query = update_synchronised_query + str(epoch_src)
-            not_first_value = True
-        update_synchronised_query = update_synchronised_query + ") AND sensor='" + sensor_name + "'"
-        # log.debug("\tDB src (remote): query = " + str(len(update_synchronised_query)) + " bytes/chars.")
-        curs_src.execute(update_synchronised_query)
-        # log.debug("\tDB src (remote): query executed.")
-
+        curs_src.execute("SELECT  epochtimestamp, measure"
+                         "  FROM  raw_measures"
+                         " WHERE  sensor = %s AND synchronised = FALSE"
+                         " ORDER BY epochtimestamp LIMIT %s",
+                         (sensor_name, SYNC_BATCH_SIZE))
+        rows = curs_src.fetchall()
+        if rows:
+            curs_dest.executemany("INSERT INTO raw_measures (epochtimestamp, measure, sensor) VALUES (%s, %s, %s)",
+                                  [(epoch, measure, sensor_name) for (epoch, measure) in rows])
+        # Local commit first: if marking them on the remote then fails, the rows are copied again
+        # next run (duplicates) rather than lost
+        conn_local_dest.commit()
+        if rows:
+            epochs = [epoch for (epoch, measure) in rows]
+            curs_src.execute("UPDATE raw_measures SET synchronised = TRUE"
+                             " WHERE sensor = %s AND epochtimestamp IN (" + ", ".join(["%s"] * len(epochs)) + ")",
+                             [sensor_name] + epochs)
         conn_remote_src.commit()
-        # log.debug("\tDB src (remote): commited.")
-
-    conn_local_dest.commit()  # Can be an update of label name or unit, etc... without value
-    log.debug("\tDB dest (locale): commited.")
-
-    log.info("\t=> Imported '{0}' records from '{1}'.".format(n_updates, remote_server_src))
-
-    return
+        log.info("\t=> Imported '{0}' records from '{1}'.".format(len(rows), remote_server_src))
+    except Exception as err:
+        log.exception("\tError '{0}' while copying '{1}' from '{2}'".format(err, sensor_name, remote_server_src))
+        for conn in (conn_remote_src, conn_local_dest):
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+    finally:
+        conn_remote_src.close()  # releases any remote lock even after an error
 
 
 def create_folders_if_required(destination_file):
@@ -176,13 +172,16 @@ def rsync_pictures_from_server(local_sensor, remote_server_src, conn_local_dest)
     except Exception as err:
         log.error("\tException '{0}' when connecting to DB.".format(err))
         return
-    curs_src = conn_remote_src.cursor()
-    read_filepath_query = "SELECT filepath_last, filepath_data" \
-                          "  FROM captures" \
-                          " WHERE sensor_name='" + sensor_name + "';"
-    # log.debug("\tread_filepath_query = '" + read_filepath_query + "'")  # for debugging purpose
-    curs_src.execute(read_filepath_query)
-    (filepath_last_src, filepath_data_src) = curs_src.fetchall()[0]
+    try:
+        curs_src = conn_remote_src.cursor()
+        curs_src.execute("SELECT filepath_last, filepath_data FROM captures WHERE sensor_name = %s", (sensor_name,))
+        row = curs_src.fetchone()
+    finally:
+        conn_remote_src.close()  # not kept open during the copies below, which may take long
+    if row is None:
+        log.warning("\tNo picture recorded for '{0}' on '{1}': nothing to copy".format(sensor_name, remote_server_src))
+        return
+    (filepath_last_src, filepath_data_src) = row
     log.debug("\t(..._last_src  , ..._data_src  ) = (\t'" + filepath_last_src + "',\t'" + filepath_data_src + "')")
     log.debug("\t(..._last_local, ..._data_local) = (\t'" + filepath_last_local + "',\t'" + filepath_data_local + "')")
 
@@ -210,22 +209,30 @@ def rsync_pictures_from_server(local_sensor, remote_server_src, conn_local_dest)
     destination_file = utils.get_home() + "/meteo/captures/" + filepath_last_src
     create_folders_if_required(destination_file)
     command = ["scp",
-               "-P", str(ssh_port),
+               "-P", str(ssh_port)] + SSH_OPTIONS + [
                rsync_user + "@" + remote_server_src + ":/home/pi/meteo/captures/" + filepath_last_src,
                destination_file]
-    cp_return_code = subprocess.call(command)
-    log.info("\tscp terminated with return code " + str(cp_return_code))
-    if cp_return_code == 0:
+    def update_local_captures():
         log.info("\tUpdating local db with values from remote...")
         curs_dest = conn_local_dest.cursor()
-        update_last_pictures_values = "UPDATE captures" + \
-                                      "   SET filepath_last = '" + filepath_last_src + "'," + \
-                                      "       filepath_data = '" + filepath_data_src + "'" + \
-                                      " WHERE sensor_name='" + sensor_name + "';"
-        curs_dest.execute(update_last_pictures_values)
+        # Parameters: the paths come from the remote's DB
+        curs_dest.execute("UPDATE captures SET filepath_last = %s, filepath_data = %s WHERE sensor_name = %s",
+                          (filepath_last_src, filepath_data_src, sensor_name))
         conn_local_dest.commit()
         log.info("\tLocal db updated with ('" + filepath_last_src + "', '" + filepath_data_src + "').")
-    else:
+
+    try:
+        cp_return_code = subprocess.call(command, timeout=SCP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        # scp has been killed (e.g. weak WiFi, the picture needs more than SCP_TIMEOUT_SECONDS): rsync below, which
+        # only gives up after 60 s without any transfer, still copies the pictures, this one included. Returning
+        # here instead would retry the same scp at every run, and never synchronise that camera any more.
+        log.error("\tscp did not complete within {0} s, command was: {1}".format(SCP_TIMEOUT_SECONDS, command))
+        cp_return_code = None
+    log.info("\tscp terminated with return code " + str(cp_return_code))
+    if cp_return_code == 0:
+        update_local_captures()
+    elif cp_return_code is not None:
         log.info("\tAn error occured, command was: " + str(command))
         # For more details, add verbosity to command with option '-v'
         # Return codes can be seen there: https://support.microfocus.com/kb/doc.php?id=7021696
@@ -239,8 +246,10 @@ def rsync_pictures_from_server(local_sensor, remote_server_src, conn_local_dest)
          "--compress",  # -rav[z]
          "--size-only",
          "--perms",  # preserve permissions
-         "--rsh", "ssh -p " + str(ssh_port),
+         "--rsh", " ".join(["ssh", "-p", str(ssh_port)] + SSH_OPTIONS),
          # "--time-limit", "1",  # not working on some distros (exemple: Synology NAS)
+         # No overall time limit: catching up after a long outage may legitimately take hours
+         # (the values of the remotes are still synchronised meanwhile, see remote_sync_lock())
          "--timeout", "60",  # if network is not good, we prefer exit quickly and let next execution finishing.
          rsync_user + "@" + remote_server_src + ":/home/pi/meteo/captures/" + sensor_name + "/",
          utils.get_home() + "/meteo/captures/" + sensor_name + "/"])
@@ -248,6 +257,8 @@ def rsync_pictures_from_server(local_sensor, remote_server_src, conn_local_dest)
         log.error("\trsync returned code '" + str(rsync_return_code) + "' different from success '0'...")
     else:
         log.info("\tLocal and remote folder are successfully synchronised.")
+        if cp_return_code != 0:  # the newest picture came with rsync: next runs need not copy it again
+            update_local_captures()
         # TODO set new values 'folder_synchronised' in table 'captures'
     return
 
@@ -336,14 +347,29 @@ def main():  # Expected to be called once per minute
             # Value of current sensor is hosted by another remote DB.
             # Values that are not "synchronised" here will be copied now.
             if first_remote:
-                sleep(5)  # give time for very last value of remote sensors to be updated
                 first_remote = False
+                sleep(5)  # give time for very last value of remote sensors to be updated
             remote_server = sensor_type[7:]
-            log.info("Remote sensor '{0}' -> reading values from '{1}'...".format(sensor_name, remote_server))
-            if unit == "picture":
-                rsync_pictures_from_server(sensor, remote_server, conn)
-            else:
-                copy_values_from_server(sensor, remote_server, conn)
+            with remote_sync_lock(remote_server, sensor_name, unit) as acquired:
+                if not acquired:
+                    log.warning("Remote sensor '{0}': another run is synchronising {1} from '{2}', skipped this time"
+                                .format(sensor_name, "it" if unit == "picture" else "values", remote_server))
+                    continue
+                log.info("Remote sensor '{0}' -> reading values from '{1}'...".format(sensor_name, remote_server))
+                try:
+                    if unit == "picture":
+                        rsync_pictures_from_server(sensor, remote_server, conn)
+                    else:
+                        copy_values_from_server(sensor, remote_server, conn)
+                except Exception as err:
+                    # An unreachable or failing remote must not abort the run: the other sensors, the local
+                    # values and the replay of failed requests below must still be done
+                    log.exception("Remote sensor '{0}': error '{1}' while synchronising from '{2}'"
+                                  .format(sensor_name, err, remote_server))
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
 
         else:
             log.info("Sensor '" + sensor_name + "' -> ERROR! Unable to interpret '" + str(sensor_type)
@@ -360,6 +386,20 @@ def main():  # Expected to be called once per minute
             log.info(f"\t=> Sensor '{sensor_name}' -> No value")
 
     # end of for-loop on each sensor
+
+    # The remote syncs may have lasted hours (rsync of pictures catching up after an outage): past the server's
+    # wait_timeout (8 h by default), the local connection is closed and the inserts, the picture update and the
+    # replay below would fail: open a new one (pymysql's ping(reconnect=True) is deprecated).
+    if conn is not None:
+        try:
+            conn.ping(reconnect=False)
+        except Exception as err:
+            log.warning("Local database connection lost during the remote syncs ({0}): reconnecting".format(err))
+            try:
+                conn = db_module.get_conn()
+                curs = conn.cursor()
+            except Exception as err:
+                log.warning("Local database connection not restored: {0}".format(err))
 
     # Add values to database
     if values:

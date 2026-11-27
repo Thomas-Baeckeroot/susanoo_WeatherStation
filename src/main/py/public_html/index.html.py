@@ -35,6 +35,15 @@ html = """<?xml version="1.0" encoding="UTF-8" ?>
 <head>
     <title>Centrale météo St Benoît</title>
     <link rel="icon" type="image/svg+xml" href="html/favicon.svg">
+    <style>
+        /* Spinner shown behind images until they are loaded */
+        img.loading {
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='9' fill='none' stroke='%23eee' stroke-width='3' stroke-dasharray='42 15'%3E%3CanimateTransform attributeName='transform' type='rotate' from='0 12 12' to='360 12 12' dur='1s' repeatCount='indefinite'/%3E%3C/circle%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: center;
+            background-size: 1.5em 1.5em;
+        }
+    </style>
 </head>
 <body style="background-color: lightsteelblue;">"""
 
@@ -44,17 +53,17 @@ try:
     # Connect or Create DB File
     conn = db_module.get_conn()
     curs = conn.cursor()
+    # Last value of each sensor: the derived table uses the (sensor, epochtimestamp) index once
+    # ("index for group-by"); a correlated MAX() subquery per row took ~45 s on the NAS
     curs.execute(
-        "SELECT  sensor, epochtimestamp, measure "
-        "FROM    raw_measures AS raw1 "
-        "WHERE   epochtimestamp > " + two_day_ago + ""
-        "  AND   epochtimestamp ="
-        "          ( SELECT  MAX(epochtimestamp)"
-        "            FROM    raw_measures AS raw2"
-        "            WHERE   epochtimestamp > " + two_day_ago + ""
-        "              AND   raw1.sensor = raw2.sensor"
-        "            GROUP BY sensor"
-        "          ); ")
+        "SELECT  raw.sensor, raw.epochtimestamp, raw.measure "
+        "FROM    ( SELECT  sensor, MAX(epochtimestamp) AS last_epoch"
+        "          FROM    raw_measures"
+        "          WHERE   epochtimestamp > %s"
+        "          GROUP BY sensor ) AS last"
+        "  JOIN  raw_measures AS raw"
+        "    ON  raw.sensor = last.sensor AND raw.epochtimestamp = last.last_epoch",
+        (int(two_day_ago),))
     values = curs.fetchall()
     last_values = {}
     for value in values:
@@ -87,17 +96,13 @@ try:
         sensor_name = sensor_name.decode('ascii')
 
         if unit == "picture":  # Below 10, sensors are not displayed in top list (ie: pictures from camera)
-            arguments = {'image': filepath_data}
-            result = urllib.parse.urlencode(arguments, quote_via=urllib.parse.quote_plus)
-            # TODO From index.html, link to the image should point to "html/capture.html" without further parameters
-            # (letting capture.html showing the default date/time)
-
-            # 'password=xyz&username=administrator'   # "image=" + urllib.parse.quote(filepath_data)
-            # "<td><a href=\"/html/capture.html?image=" + urllib.parse.quote(filepath_data) + \
+            # Camera folder = first path component; sensor names are VARBINARY(8) and may be truncated
+            camera = filepath_data.split("/")[0]
+            result = urllib.parse.urlencode({"s": camera}, quote_via=urllib.parse.quote_plus)
             camera_row = \
                 camera_row + \
                 "<td><a href=\"/html/capture.html?" + result + \
-                "\"><img src=\"captures/" + filepath_data + \
+                "\"><img class=\"loading\" fetchpriority=\"high\" src=\"captures/" + filepath_data + \
                 "\" width=\"360em\" height=\"270em\" style=\"background-color: lightgray\" /></a><br/>" + \
                 sensor_label + "<br/>" + re.findall(r"(\d{4}-\d{2}-\d{2}.\d{2}-\d{2})", filepath_data)[0] + "</td>"
 
@@ -129,7 +134,7 @@ try:
                     "</td>\n\t<td style=\"text-align: center;\">" + \
                     "<a href=\"graph.svg?sensor=" + sensor_name + "&maxepoch=" + str(oldest_date) + \
                     "&width=980\">" + \
-                    "<img src=\"graph.svg?sensor=" + sensor_name + "&maxepoch=" + str(oldest_date) + \
+                    "<img class=\"loading\" data-src=\"graph.svg?sensor=" + sensor_name + "&maxepoch=" + str(oldest_date) + \
                     "&width=100\" style=\"width:6.25em;height:2.5em; background-color: whitesmoke\" />" + \
                     "</a><td></tr>\n"
             else:
@@ -150,8 +155,8 @@ try:
     sensor_list = \
         sensor_list + \
         "<tr style=\"border: .15em solid black;\">\n\t<td style=\"padding: 1em;\">" + \
-        "<form action=\"index.html\">" + \
-        "<input type=\"submit\" style=\"padding: 1.2em;\" value=\"Rafraichir\" />" + \
+        "<form action=\"index.html\" id=\"refresh-form\">" + \
+        "<input type=\"submit\" id=\"refresh-button\" style=\"padding: 1.2em; width: 13em;\" value=\"Rafraîchir\" />" + \
         "</form></td>\n\t<td style=\"padding: 1em;\" colspan=\"3\">" + date_readings + "</td></tr>" + camera_row + \
         "</tr></table></td></tr></table>"
 
@@ -162,6 +167,55 @@ except Exception as err:
     print("Exception: {0}".format(err), file=sys.stderr)
     traceback.print_exc(file=sys.stderr)
 
+# Graphs are slow to generate and would take all the browser's connections: load them after the photos
+html = html + """<script>
+(function () {
+    // Grey out the refresh button while the new page is generated, so the click is visibly acknowledged
+    var refreshForm = document.getElementById("refresh-form");
+    if (refreshForm) {
+        refreshForm.addEventListener("submit", function () {
+            var button = document.getElementById("refresh-button");
+            setTimeout(function () {  // after the submission has started
+                button.disabled = true;
+                button.value = "Rafraîchissement…";
+            }, 0);
+            setTimeout(function () {
+                button.disabled = false;
+                button.value = "Rafraîchir";
+            }, 30000);
+        });
+    }
+})();
+(function () {
+    function loaded(img) { img.classList.remove("loading"); }
+    document.querySelectorAll("img.loading").forEach(function (img) {
+        if (img.getAttribute("src") && img.complete) {
+            loaded(img);
+        } else {
+            img.addEventListener("load", function () { loaded(img); });
+            img.addEventListener("error", function () { loaded(img); });
+        }
+    });
+
+    var photos = Array.prototype.filter.call(document.images, function (img) { return !img.dataset.src; });
+    var pending = photos.filter(function (img) { return !img.complete; }).length;
+    var started = false;
+    function loadGraphs() {
+        if (started) { return; }
+        started = true;
+        document.querySelectorAll("img[data-src]").forEach(function (img) { img.src = img.dataset.src; });
+    }
+    function photoDone() { if (--pending <= 0) { loadGraphs(); } }
+    photos.forEach(function (img) {
+        if (!img.complete) {
+            img.addEventListener("load", photoDone);
+            img.addEventListener("error", photoDone);
+        }
+    });
+    if (pending === 0) { loadGraphs(); }
+    setTimeout(loadGraphs, 5000);
+})();
+</script>"""
 html = html + "</body></html>"
 print(html)
 log.info("Terminated generating index.html")

@@ -14,6 +14,13 @@ let index = undefined;
 let selectedHhMm15 = undefined;
 let selectedPicture = undefined;
 
+const PLAY_FRAME_MS = 400;
+let playTimer = undefined;
+let playing = false;
+// Incremented on each start / stop of the playback: a picture still loading for an earlier playback (stopped,
+// restarted, or of another day) is then ignored, so that only one playback loop ever runs
+let playGeneration = 0;
+
 async function fetchData(sensor, year, month, day) {
     console.log(".fetchData('" + sensor + "', '" + year + "', '" + month + "', '" + day + "') - start method");
     // Construct the URL with parameters for the fetch call
@@ -46,7 +53,7 @@ async function fetchData(sensor, year, month, day) {
                 "year": null,
                 "month_day": null, "error_message": err
             };
-            sortedPictures = {};
+            sortedPictures = [];  // an array, as in the other error cases: daylightHhMms() calls .filter() on it
             return;
         }
 
@@ -180,7 +187,7 @@ async function updateCurrentImage(pictureData, hh_mm) {
     await unselectPictureSelector();
 
     // Change the src attribute of the main image
-    document.getElementById("capture-img").src = "../captures/" + picturesProperties.sensor + "/" + picturesProperties.year + "/" + picturesProperties.month_day + "/" + currentImage;
+    document.getElementById("capture-img").src = pictureUrl(pictureData);
 
     const parts = currentImage.split(/[_-]|Z/g); // Split by '_', '-', and 'Z'
     hour = parseInt(parts[4], 10);
@@ -211,11 +218,8 @@ async function updateCurrentImage(pictureData, hh_mm) {
         makeElementNotClickable(document.getElementById("next_hh_mm"));
     }
 
-    // TODO Check consistency with picturesProperties
-    document.getElementById("error_message").textContent = picturesProperties.error_message; // TODO Implement error message display
-    if (picturesProperties.error_message !== "") {
-        alert("Error:\n" + picturesProperties.error_message);
-    }
+    // Error message of the server: displayed once per loaded day by refreshDate(), not here (called for each
+    // displayed picture, every PLAY_FRAME_MS during playback)
 
     // await updateDateData(); // NOT TO DO WITHIN .updateCurrentImage()
 }
@@ -268,11 +272,14 @@ async function fillPictureSelectorHhMm(hh_mm, pictureData) {
 
     hh_mm_element.textContent = mm;
 
-    // console.log("DOMContentLoaded - addEventListener: '" + hh_mm + "' -> '" + pictureData + "'")
-    hh_mm_element.addEventListener("click", function () {
-        updateCurrentImage(pictureData, hh_mm);
-    });
-    // Add an event listener to each table cell
+    // The cell keeps the picture it shows for the loaded day, read by a single click listener added once:
+    // listeners added at each refreshDate() used to pile up, and a cell without picture on the loaded day
+    // still showed the picture of an earlier day (a broken image, as from the wrong day folder).
+    hh_mm_element.pictureEntry = {pictureData: pictureData, hh_mm: hh_mm};
+    if (!hh_mm_element.hasPictureClickListener) {
+        hh_mm_element.hasPictureClickListener = true;
+        hh_mm_element.addEventListener("click", pictureCellClicked);
+    }
 
     hh_mm_element.classList.remove("no-picture-cell");
     if (pictureData.fSize < SIZE_LIMIT) {
@@ -286,20 +293,21 @@ async function fillPictureSelectorHhMm(hh_mm, pictureData) {
     makeElementClickable(hh_mm_element);
 }
 
+function pictureCellClicked(event) {
+    const entry = event.currentTarget.pictureEntry;
+    if (entry === undefined) {  // no picture in this cell for the loaded day
+        return;
+    }
+    stopPlayback();
+    updateCurrentImage(entry.pictureData, entry.hh_mm);
+}
+
+// The hover highlight comes from the CSS (.buttonEnabled:hover): no mouseover / mouseout listeners, which piled
+// up at each call and could not be removed (makeElementNotClickable() passed new anonymous functions), so a
+// disabled element kept being highlighted.
 function makeElementClickable(element) {
     console.log(".makeElementClickable(-> element.id='" + element.id + "')");
     element.style.cursor = "pointer";
-
-    // todo Replaceable with .buttonEnabled ?
-    // Add a mouseover event listener
-    element.addEventListener("mouseover", function () {
-        element.classList.add("hovered-cell");
-    });
-    // Add a mouseout event listener
-    element.addEventListener("mouseout", function () {
-        element.classList.remove("hovered-cell");
-    });
-
     element.classList.remove("buttonDisabled");
     element.classList.add("buttonEnabled");
 }
@@ -307,25 +315,92 @@ function makeElementClickable(element) {
 function makeElementNotClickable(element) {
     console.log(".makeElementNotClickable(...)");
     element.style.cursor = "default";
-
-    // Remove mouseover event listener
-    element.removeEventListener("mouseover", function () {
-    });
-    // Add a mouseout event listener
-    element.removeEventListener("mouseout", function () {
-    });
-
     element.classList.remove("buttonEnabled");
     element.classList.add("buttonDisabled");
 }
 
+function pictureUrl(pictureData) {
+    return "../captures/" + picturesProperties.sensor + "/" + picturesProperties.year + "/" +
+        picturesProperties.month_day + "/" + pictureData.img;
+}
+
+function daylightHhMms() {
+    return (sortedPictures || []).filter(function (hh_mm) {
+        return picturesData[hh_mm].fSize > SIZE_LIMIT;
+    });
+}
+
+function updatePlayButton() {
+    const button = document.getElementById("playPause");
+    button.innerHTML = playing ? "&#10074;&#10074;" : "&#9654;";
+    button.title = playing ? "Pause (Espace)" : "Lire en boucle les images de jour (Espace)";
+    if (daylightHhMms().length > 1) {
+        makeElementClickable(button);
+    } else {
+        makeElementNotClickable(button);
+    }
+}
+
+function stopPlayback() {
+    playGeneration++;
+    if (playTimer !== undefined) {
+        clearTimeout(playTimer);
+        playTimer = undefined;
+    }
+    if (playing) {
+        playing = false;
+        updatePlayButton();
+    }
+}
+
+// Shows the next daylight picture once it is loaded, so a slow network never shows a blank frame
+function playStep(generation) {
+    playTimer = undefined;
+    if (generation !== playGeneration) {
+        return;
+    }
+    const frames = daylightHhMms();
+    if (!playing || frames.length < 2) {
+        stopPlayback();
+        return;
+    }
+    const current = frames.indexOf(sortedPictures[index]);
+    const nextFrame = frames[(current + 1) % frames.length];  // loops back to the first one
+    const preload = new Image();
+    preload.onload = preload.onerror = function () {
+        if (generation !== playGeneration) {  // playback stopped or restarted while this picture was loading
+            return;
+        }
+        updateCurrentImage(picturesData[nextFrame], nextFrame);
+        playTimer = setTimeout(playStep, PLAY_FRAME_MS, generation);
+    };
+    preload.src = pictureUrl(picturesData[nextFrame]);
+}
+
+function togglePlayback() {
+    console.log(".togglePlayback()");
+    if (playing) {
+        stopPlayback();
+        return;
+    }
+    if (daylightHhMms().length < 2) {
+        return;
+    }
+    playing = true;
+    playGeneration++;
+    updatePlayButton();
+    playStep(playGeneration);
+}
+
 function firstDaylightClickHandler() {
     console.log(".firstDaylightClickHandler()");
+    stopPlayback();
     updateCurrentImage(picturesData[firstDaylightHhMm], firstDaylightHhMm);
 }
 
 function lastDaylightClickHandler() {
     console.log(".lastDaylightClickHandler()");
+    stopPlayback();
     updateCurrentImage(picturesData[lastDaylightHhMm], lastDaylightHhMm);
 }
 
@@ -360,6 +435,7 @@ async function fillPicturesSelector() {
 
 async function previousHhMm() {
     console.log(".previousHhMm()");
+    stopPlayback();
     const previousKey = index > 0 ?
         sortedPictures[index - 1] : sortedPictures[0];
     await updateCurrentImage(picturesData[previousKey], previousKey);
@@ -367,6 +443,7 @@ async function previousHhMm() {
 
 async function nextHhMm() {
     console.log(".nextHhMm()");
+    stopPlayback();
     const nextKey = index < sortedPictures.length - 1 ?
         sortedPictures[index + 1] : sortedPictures[sortedPictures.length - 1];
     await updateCurrentImage(picturesData[nextKey], nextKey);
@@ -374,6 +451,7 @@ async function nextHhMm() {
 
 async function clearData() {
     console.log(".clearData()");
+    stopPlayback();
     hour = undefined; // :int
     minute = undefined; // :int
     firstDaylightHhMm = undefined;
@@ -395,7 +473,12 @@ async function clearData() {
             const formattedMinute = minute.toString().padStart(2, '0');
             // Create the time string
             const hh_mm = `${formattedHour}h${formattedMinute}`;
-            document.getElementById(hh_mm).textContent = "—";
+            const hh_mm_element = document.getElementById(hh_mm);
+            hh_mm_element.textContent = "—";
+            // No picture until fillPictureSelectorHhMm() sets one for the new day: clicks do nothing
+            hh_mm_element.pictureEntry = undefined;
+            hh_mm_element.classList.remove("buttonEnabled");
+            hh_mm_element.style.cursor = "default";
         }
     }
 
@@ -432,10 +515,13 @@ async function refreshDate(sensor, year, month, day) {
     // Call fetchData function to get data after page loaded:
     await fetchData(sensor, year, month, day); // Wait for fetchData to complete
     console.log("\tafter fetchData call:", picturesData, picturesProperties);
+    // Kept now: updateDateData() below may replace picturesProperties
+    const serverMessage = picturesProperties.error_message || "";
     const picturesFolder = "captures/" + picturesProperties.sensor + "/";
     console.log("\tpicturesFolder =", picturesFolder);
 
     await fillPicturesSelector();
+    updatePlayButton();
     console.log("picturesData = " + picturesData);
     if (lastDaylightHhMm !== undefined) {
         console.log("lastDaylightHhMm = " + lastDaylightHhMm);
@@ -448,10 +534,18 @@ async function refreshDate(sensor, year, month, day) {
     } else {
         // Change the src attribute of the main image
         document.getElementById("capture-img").src = "../html/undefined_4x3.png";
-        document.getElementById("error_message").textContent = "No pictures for this date!";
     }
+    const noPictures = lastHhMm === undefined;
+    document.getElementById("error_message").textContent =
+        ((noPictures ? "No pictures for this date! " : "") + serverMessage).trim();
 
     await updateDateData();
+
+    // Once per loaded day, after the page is filled; as before, only when pictures are shown (e.g. the server
+    // fell back to another day than the one asked)
+    if (serverMessage && !noPictures) {
+        alert("Error:\n" + serverMessage);
+    }
 }
 
 document.addEventListener("DOMContentLoaded", async function () {
@@ -480,7 +574,13 @@ document.addEventListener("DOMContentLoaded", async function () {
         console.log("Using fallback date:", paramSensor, paramYear, paramMonth, paramDay);
     }
 
-    await refreshDate(paramSensor, paramYear, paramMonth, paramDay);
+    // Handlers are registered before the first refreshDate(): if loading the day fails, the page still reacts
+    // (both handlers ignore events until pictures are loaded)
+    document.getElementById("playPause").addEventListener("click", function () {
+        if (this.classList.contains("buttonEnabled")) {
+            togglePlayback();
+        }
+    });
 
     // Add keyboard navigation for arrow keys
     document.addEventListener("keydown", function(event) {
@@ -490,6 +590,12 @@ document.addEventListener("DOMContentLoaded", async function () {
         }
 
         switch(event.key) {
+            case " ":
+                event.preventDefault(); // Prevent page scrolling
+                if (!event.repeat) {  // a held Space key would toggle the playback on and off continuously
+                    togglePlayback();
+                }
+                break;
             case "ArrowLeft":
                 event.preventDefault(); // Prevent default browser behavior
                 if (index > 0) {
@@ -504,6 +610,8 @@ document.addEventListener("DOMContentLoaded", async function () {
                 break;
         }
     });
+
+    await refreshDate(paramSensor, paramYear, paramMonth, paramDay);
 
     console.log("DOMContentLoaded - ---DOMContentLoaded-end---");
 });
