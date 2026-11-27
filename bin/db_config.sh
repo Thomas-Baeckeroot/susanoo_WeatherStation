@@ -17,7 +17,9 @@ db_setting() {
 }
 
 if [ ! -r "${CONFIG_FILE}" ]; then
-    echo "Cannot read ${CONFIG_FILE}" >&2
+    # e.g. a Synology scheduled task left with its default user, root
+    echo "Cannot read ${CONFIG_FILE}: run this script as the data-collector user (meteo on the NAS)," \
+         "or set SUSANOO_CONFIG to its config file" >&2
     exit 1
 fi
 DBNAME=$(db_setting name)
