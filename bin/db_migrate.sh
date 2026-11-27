@@ -23,6 +23,9 @@ MYSQL="${MYSQL:-mysql}"
 # Even with ALGORITHM=INPLACE, LOCK=NONE, an ALTER TABLE needs an exclusive metadata lock at its start and
 # end, and while it waits for it every new query on the table queues behind it (collector inserts, web
 # pages): give up quickly instead (server default: 1 day), the migration can simply be re-run later.
+# On a remote Pi, the master's sync queries (each a scan of up to ~90 s, one sensor after the other) hold the
+# table nearly all the time: a long ALTER then builds its index and fails at the end. Pause that sync first by
+# holding, on the master as its collector user, ~/.susanoo-sync-locks/<remote>_values.lock (flock) until done.
 LOCK_WAIT_TIMEOUT="${LOCK_WAIT_TIMEOUT:-10}"
 # Synology's MariaDB package client is not always in PATH
 if ! command -v "${MYSQL}" > /dev/null && [ -x /usr/local/mariadb10/bin/mysql ]; then
@@ -63,7 +66,8 @@ for file in "${MIGRATIONS_DIR}"/*.sql; do
     started=$(date +%s)
     if ! { echo "SET SESSION lock_wait_timeout = ${LOCK_WAIT_TIMEOUT};"; cat "${file}"; } | sql; then
         echo "FAILED: ${version} (fix it and re-run; later migrations were not applied)." >&2
-        echo "'Lock wait timeout exceeded' means another session was using the table (backup?): re-run later." >&2
+        echo "'Lock wait timeout exceeded' means another session was using the table (backup? on a remote Pi," \
+             "the master's sync: pause it, see LOCK_WAIT_TIMEOUT in this script): re-run later." >&2
         exit 1
     fi
     sql -e "INSERT INTO schema_migrations (version) VALUES ('${version}')" || exit 1
