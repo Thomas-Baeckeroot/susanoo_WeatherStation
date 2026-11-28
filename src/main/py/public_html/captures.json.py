@@ -73,10 +73,17 @@ def get_newest_modified_folder(folder):
     return newest_folder
 
 
+def list_folders(path):
+    """Names of the sub-folders of `path`, without hidden ones nor the '@eaDir' index folders of a Synology NAS
+    (which would otherwise sort first, before the camera / year / day folders)."""
+    return [folder for folder in os.listdir(path)
+            if folder[:1] not in (".", "@") and os.path.isdir(os.path.join(path, folder))]
+
+
 def get_first_folder(path, reverse_order=True):
     try:
         # Get a list of all directories in the specified path
-        folders = [folder for folder in os.listdir(path) if os.path.isdir(os.path.join(path, folder))]
+        folders = list_folders(path)
 
         # Sort the list of folders alphabetically (or in reverse order if reverse_order is True)
         sorted_folders = sorted(folders, reverse=reverse_order)
@@ -126,7 +133,9 @@ def get_json_from_folder(sensor, year, month, day):
 
     log.info(f"sensor='{sensor}'")
     if sensor:
-        if os.path.exists(f"captures/{sensor}"):
+        # Only the name of a camera folder, never a path: 's=../..' would list the pictures of any folder the
+        # web server can read
+        if os.path.isdir("captures") and sensor in list_folders("captures"):
             sensor_folder = sensor
         else:
             sensor_folder = get_first_folder("captures", reverse_order=False)
