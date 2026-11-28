@@ -9,35 +9,53 @@ printf -- "Script directory: '%s'\n" "${SCRIPT_DIR}"
 START_DIR=$(pwd)
 source "${SCRIPT_DIR}/bin/helper_functions.sh"
 
+# Config files: one per user, each private to its user (mode 600). The collector's one holds its read-write
+# database account and the accounts of the remote stations; the web server's one only its read-only account
+# (written by bin/create_web_db_account.sh). Never link the web server's config to the collector's one.
+COLLECTOR_CONFIG="${HOME}/.config/susanoo_WeatherStation.conf"
 function install_config_files() {
-  if [ -f "${HOME}/.config/susanoo_WeatherStation.conf" ]; then
+  mkdir -p "${HOME}/.config"
+  if [ -f "${COLLECTOR_CONFIG}" ]; then
     printf -- "An existing config file has been found\n"
     printf -- "Here is a diff of current version vs. template:\n"
-    diff "${HOME}/.config/susanoo_WeatherStation.conf" "${SCRIPT_DIR}/bin/susanoo_WeatherStation_template.conf"
+    diff "${COLLECTOR_CONFIG}" "${SCRIPT_DIR}/bin/susanoo_WeatherStation_template.conf" || true
   else
     printf -- "No pre-existing config file found\n"
-    cp "${SCRIPT_DIR}/bin/susanoo_WeatherStation_template.conf" "${HOME}/.config/susanoo_WeatherStation.conf"
+    (umask 077 && cp "${SCRIPT_DIR}/bin/susanoo_WeatherStation_template.conf" "${COLLECTOR_CONFIG}")
     printf -- "New config file has been copied for user collecting the sensors data.\n"
   fi
+  chmod 600 "${COLLECTOR_CONFIG}"
   printf -- "After install script is done, adjust it with:\n"
-  printf -- "vi %s/.config/susanoo_WeatherStation.conf\n\n" "${HOME}"
+  printf -- "vi %s\n\n" "${COLLECTOR_CONFIG}"
   read -r -p "Press Enter to continue..."
 
-  if [ -f "${HOME}/../${WEB_USER}/.config/susanoo_WeatherStation.conf" ]; then
-    printf -- "An existing config file has been found\n"
-    printf -- "Here is a diff of current version vs. template:\n"
-    diff "${HOME}/../${WEB_USER}/.config/susanoo_WeatherStation.conf" "${SCRIPT_DIR}/bin/susanoo_WeatherStation_template_Web.conf"
+  # Written as the web user: it owns its config, and the installing user cannot write in its home folder
+  if sudo -H -u "${WEB_USER}" sh -c 'test -f "${HOME}/.config/susanoo_WeatherStation.conf"'; then
+    printf -- "Existing config file of the web server kept\n"
   else
-    printf -- "No pre-existing config file found\n"
-    cp "${SCRIPT_DIR}/bin/susanoo_WeatherStation_template_Web.conf" "${HOME}/../${WEB_USER}/.config/susanoo_WeatherStation.conf"
-    sudo chown "${WEB_USER}" "${HOME}/../${WEB_USER}/.config/susanoo_WeatherStation.conf"
-    sudo chgrp "${WEB_USER}" "${HOME}/../${WEB_USER}/.config/susanoo_WeatherStation.conf"
-    # fixme Depending on system, the upper command may fail (when group for user is different than username).
-    printf -- "New config file has been copied for web server.\n"
+    sudo -H -u "${WEB_USER}" sh -c 'umask 077 && mkdir -p "${HOME}/.config" && cat > "${HOME}/.config/susanoo_WeatherStation.conf"' \
+      < "${SCRIPT_DIR}/bin/susanoo_WeatherStation_Web_template.conf"
+    printf -- "New config file has been copied for web server (its database account is set below).\n"
   fi
-  printf -- "After install script is done, adjust it with:\n"
-  printf -- "vi %s/.config/susanoo_WeatherStation.conf\n\n" "${HOME}/../${WEB_USER}"
-  read -r -p "Press Enter to continue..."
+}
+
+# Value of a key (case-insensitive, like Python's configparser) in the [DATABASE] section of the collector's config
+function collector_db_setting() {
+  awk -v key="$1" '
+    /^[ \t]*\[/ { in_db = (tolower($0) ~ /^[ \t]*\[database\]/); next }
+    in_db && /=/ {
+      name = $0; sub(/[ \t]*=.*/, "", name); gsub(/^[ \t]+/, "", name)
+      if (tolower(name) == key) { sub(/^[^=]*=[ \t]*/, ""); sub(/[ \t\r]+$/, ""); print; exit }
+    }' "${COLLECTOR_CONFIG}"
+}
+
+# Replaces the password of the [DATABASE] section of the collector's config (kept private)
+function set_collector_db_password() {
+  (umask 077 && awk -v password="$1" '
+    /^[ \t]*\[/ { in_db = (tolower($0) ~ /^[ \t]*\[database\]/) }
+    in_db && tolower($0) ~ /^[ \t]*password[ \t]*=/ { print "password = " password; next }
+    { print }' "${COLLECTOR_CONFIG}" > "${COLLECTOR_CONFIG}.tmp")
+  mv -f "${COLLECTOR_CONFIG}.tmp" "${COLLECTOR_CONFIG}"
 }
 
 
@@ -109,27 +127,58 @@ if id "${WEB_USER}" &>/dev/null; then
 else
   printf -- "\nUser \"%s\" does not exist but is required to run the web-server.\n" "${WEB_USER}"
   # Ask for confirmation before creating the user
-  if ask_confirmation "Create user \"${WEB_USER}\" to run web-server from? (you would be asked for a new password for this user)" "yes"; then
-    sudo adduser "${WEB_USER}"  || printf -- "ERROR! Does user \"%s\" already exist?!\n" "${WEB_USER}"
-    # extra option can be used: [--disabled-password]
-    # This will be the user running the web server. It should have the bare minimum accesses for security reasons.
+  if ask_confirmation "Create user \"${WEB_USER}\" to run web-server from?" "yes"; then
+    # The web server is exposed to the internet: its user gets the bare minimum. No password and no shell, so
+    # nobody logs in as it (administrators use 'sudo -u ${WEB_USER} <command>'), and no extra group: never add
+    # it to sudo, adm or (Synology NAS) administrators, which would hand a flaw in a page the whole machine.
+    sudo adduser --disabled-password --gecos "" --shell /usr/sbin/nologin "${WEB_USER}" \
+      || printf -- "ERROR! Does user \"%s\" already exist?!\n" "${WEB_USER}"
   else
     printf -- "User creation canceled.\n"
   fi
 fi
+for group in sudo adm administrators; do
+  if id -nG "${WEB_USER}" 2> /dev/null | tr ' ' '\n' | grep -q -x "${group}"; then
+    printf -- "WARNING: user \"%s\" is in group \"%s\": remove it (the web server must not have admin rights).\n" \
+      "${WEB_USER}" "${group}"
+  fi
+done
+
+# Raspberry Pi OS (Bookworm and later) creates private home folders (700): the web user could not reach the
+# pages in this repository. Traverse right only (x): it cannot list the home folder, and the private files in it
+# (config 600, ~/.ssh 700) stay private.
+chmod o+x "${HOME}"
 
 source "${SCRIPT_DIR}/bin/create_server_pages.sh" "${HOME}" "${WEB_USER}"
 
+install_config_files
+
 if ask_confirmation "Should we create database?" "yes"; then
   printf -- "Create database...\n"
-  #MariaDB
-  sudo mariadb -u root -e "CREATE DATABASE meteo;"  # || printf -- "Ignoring error and proceeding: database already existing?\n"
-  sudo mariadb -u root -e "CREATE USER '${INSTALL_USER}'@'localhost' IDENTIFIED BY 'SetRandomPassword123';"
-  sudo mariadb -u root -e "GRANT all privileges on meteo.* TO '${INSTALL_USER}'@'localhost';"
-  sudo mariadb -u root -e "CREATE USER 'web'@'localhost' IDENTIFIED BY 'SetRandomPassword123';"
-  sudo mariadb -u root -e "GRANT SELECT on meteo.* TO 'web'@'localhost';"
+  # One account per program, each with the least rights it needs: the collector can do anything, but only on
+  # its database; the web server can only read it (bin/create_web_db_account.sh). Passwords are random and only
+  # stored in the configs (mode 600): never a default password, and none on a command line (visible with 'ps').
+  DB_NAME=$(collector_db_setting name)
+  DB_NAME="${DB_NAME:-weather_station}"  # default of the Python code
+  DB_USER=$(collector_db_setting user)
+  DB_USER="${DB_USER:-${INSTALL_USER}}"
+  DB_PASSWORD=$(collector_db_setting password)
+  if [ -z "${DB_PASSWORD}" ] || [ "${DB_PASSWORD}" = "SetRandomPassword123" ]; then
+    # Hexadecimal: nothing to escape in SQL, and no '%' (read as interpolation by Python's configparser)
+    DB_PASSWORD=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
+    set_collector_db_password "${DB_PASSWORD}"
+  fi
+  printf -- "%s\n" \
+    "CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\`;" \
+    "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASSWORD}';" \
+    "ALTER USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASSWORD}';" \
+    "GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';" | sudo mariadb -u root
+  unset DB_PASSWORD
   # To check users:        SELECT Host, User FROM mysql.user;
-  mariadb meteo < "${HOME}/meteo/bin/db_initialization.sql"  # || printf -- "Ignoring error and proceeding...\n"
+  sudo mariadb -u root "${DB_NAME}" < "${SCRIPT_DIR}/bin/db_initialization1_tables.sql"
+  sudo mariadb -u root "${DB_NAME}" < "${SCRIPT_DIR}/bin/db_initialization2_data.sql"
+  "${SCRIPT_DIR}/bin/db_migrate.sh"
+  MYSQL="sudo mariadb -u root" PY_VENV="${PY_VENV}" "${SCRIPT_DIR}/bin/create_web_db_account.sh" "${INSTALL_USER}" "${WEB_USER}"
 
   printf -- "\n"
   printf -- "In order to use 'remote:' sensors (multiple weather stations/servers),\n"
@@ -139,22 +188,15 @@ if ask_confirmation "Should we create database?" "yes"; then
   printf -- "in file below:\n"
   printf -- "\tcat /etc/mysql/my.cnf\n"
   printf -- "\n"
-  printf -- "Appropriate user should also be created like:\n"
-  printf -- "$ sudo mysql -u root\n"
-  printf -- "> CREATE USER 'remote_pi'@'192.168.0.{server-IP}' IDENTIFIED BY 'SetRandomPassword123';\n"
-  printf -- "> GRANT all privileges on meteo.* TO 'remote_pi'@'192.168.0.{server-IP}';\n"
+  # The master server reads the measures, sensors and captures of this station and marks the measures it copied
+  # (raw_measures.synchronised): nothing more, and from its address only.
+  printf -- "Appropriate user should also be created like (random password, also in the master's config):\n"
+  printf -- "$ sudo mariadb -u root\n"
+  printf -- "> CREATE USER 'remote_pi'@'192.168.0.{server-IP}' IDENTIFIED BY '<random password>';\n"
+  printf -- "> GRANT SELECT ON %s.* TO 'remote_pi'@'192.168.0.{server-IP}';\n" "${DB_NAME}"
+  printf -- "> GRANT UPDATE (synchronised) ON %s.raw_measures TO 'remote_pi'@'192.168.0.{server-IP}';\n" "${DB_NAME}"
   printf -- "\n"
-
-  if [[ "${WEB_USER}" != "${INSTALL_USER}" ]] ; then
-    # FIXME Below is for PostGreSQL, must be adapted for mariadb
-    createuser "${WEB_USER}" --no-superuser --no-createdb --no-createrole || printf -- "Ignoring error and proceeding: DB user already exists?\n"
-  fi
-  # FIXME Below was used for PostgreSQL, the same command will probably be required for MariaDB/MySQL
-  # psql --dbname meteo --command "GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${WEB_USER};"
 fi
-
-
-install_config_files
 
 
 printf -- "\n\n*** Setup startup to launch Web server... ***\n"
@@ -168,6 +210,8 @@ else
     # The init_script_folder exists
     # cp "${SCRIPT_DIR}/susanoo_WeatherStation_startWebServer.sh /usr/local/etc/rc.d/weatherStationWeb.sh
     # FIXME For some systems (like Synology NAS) scripts launched at startup are in folder /usr/local/etc/rc.d/
+    # A copy owned by root, never a link to this repository: root runs it at boot, and the collector user (owner
+    # of the repository) could otherwise run anything as root. Copy it again by hand after it changes.
     sudo cp "${SCRIPT_DIR}/bin/susanoo_WeatherStation_startWebServer.sh" "/etc/init.d/weatherStationWeb.sh"
     sudo chmod +x "/etc/init.d/weatherStationWeb.sh"
     sudo ln -s "/etc/init.d/weatherStationWeb.sh" "/etc/rc3.d/weatherStationWeb.sh"
@@ -202,12 +246,8 @@ nohup -- ${PY_VENV}/bin/python3 -u ${HOME}/meteo/src/main/py/watchdog_gpio.py >>
 sudo su - ${INSTALL_USER} --command \"nohup -- ${PY_VENV}/bin/python3 ${HOME}/meteo/src/main/py/video_capture_on_motion.py >> ${HOME}/meteo/video.log 2>&1\" &
 
 # Webserver: (on a Synology NAS, it should be in /usr/local/etc/rc.d/weatherStationWeb.sh)
-sudo su - ${WEB_USER} --command \"nohup -- ${PY_VENV}/bin/python3 ${HOME}/meteo/src/main/py/server3.py >> ${HOME}/../${WEB_USER}/server3.log\" &
-
-
-# FIXME:
-sudo -u ${WEB_USER} --login sh -c "cd /path/to/working_directory && python3 your_script.py"
-sudo --user=${WEB_USER} --login sh -c "cd ${WEB_USER_HOME}/public_html/ && ${PY_VENV}/bin/python3 your_script.py"
+# (${WEB_USER} has no login shell: 'sudo -u', not 'su -')
+sudo -H -u ${WEB_USER} sh -c "cd ${HOME}/../${WEB_USER}/public_html && nohup -- ${PY_VENV}/bin/python3 ${HOME}/meteo/src/main/py/server3.py >> ${HOME}/../${WEB_USER}/susanoo-web.log 2>&1" &
 
 
 # Required to keep WiFi always on:
