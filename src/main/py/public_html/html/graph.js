@@ -1,5 +1,5 @@
 "use strict";
-// Graph page (graph.html): loads the measures of one sensor from /measures.json and draws them in SVG.
+// Graph page (graph.html): loads the measures of one sensor from ../measures.json and draws them in SVG.
 // URL: graph.html?sensor=temp_ext[&span=<seconds>][&end=<epoch>] (no 'end': up to now).
 // Times are shown in the browser's time zone.
 
@@ -520,7 +520,8 @@ async function load() {
     hideCursor();
     setStatus("Chargement…");
     try {
-        const response = await fetch("/measures.json?" + params.toString(), {signal: controller.signal});
+        // Relative, as the link to the index page: the site may be served below a path prefix
+        const response = await fetch("../measures.json?" + params.toString(), {signal: controller.signal});
         if (!response.ok) {
             throw new Error("HTTP " + response.status);
         }
