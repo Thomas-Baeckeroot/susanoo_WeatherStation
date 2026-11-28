@@ -5,6 +5,7 @@ import cgi
 import db_module
 import locale
 import logging
+import os
 import re
 import sys
 import time
@@ -22,6 +23,9 @@ log = logging.getLogger("index.html.py")
 
 METEO_FOLDER = "/home/pi/meteo/"
 CAPTURES_FOLDER = METEO_FOLDER + "captures/"
+# The graph page needs its links in the web root (bin/create_server_pages.sh, re-run after a 'git pull' that adds
+# pages): until then, thumbnails link to the large SVG graph. Paths relative to the server's working directory
+GRAPH_PAGE_AVAILABLE = os.path.exists("html/graph.html") and os.path.exists("measures.json")
 
 log.info("Start generating index.html")
 
@@ -132,7 +136,8 @@ try:
                     "\t<td style=\"text-align: center;font-size: x-small;\">" + \
                     date_str + \
                     "</td>\n\t<td style=\"text-align: center;\">" + \
-                    "<a href=\"html/graph.html?sensor=" + sensor_name + "\">" + \
+                    ("<a href=\"html/graph.html?sensor=" + sensor_name + "\">" if GRAPH_PAGE_AVAILABLE else
+                     "<a href=\"graph.svg?sensor=" + sensor_name + "&maxepoch=" + str(oldest_date) + "&width=980\">") + \
                     "<img class=\"loading\" data-src=\"graph.svg?sensor=" + sensor_name + "&maxepoch=" + str(oldest_date) + \
                     "&width=100\" style=\"width:6.25em;height:2.5em; background-color: whitesmoke\" />" + \
                     "</a><td></tr>\n"
