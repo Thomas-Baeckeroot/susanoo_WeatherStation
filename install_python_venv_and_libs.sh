@@ -46,9 +46,6 @@ pip3 install tsl2561 || printf -- "Ignored errors. Ok if not run on Raspberry.\n
 printf -- "- bluetin.io for HC-SR04 distance sensor reading (may fail on non-raspberry systems)\n"
 pip3 install Bluetin_Echo || printf -- "Ignored errors. Ok if not run on Raspberry.\n"
 
-printf -- "- svg.charts for drawing SVG graphics on web server\n\n"
-pip3 install svg.charts
-
 printf -- "- PyMySQL for database connection\n\n"
 # pip3 install mariadb
 pip3 install pymysql

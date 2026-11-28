@@ -18,7 +18,8 @@ With a raspian (simple 'Raspbian * Lite' ok):
 # Technical details
 
 Sensor reading is written in **Python 3**, it is triggered every minute with simple **cron**.
-Webserver is **Python 3** (graphs with svg.charts).
+Webserver is **Python 3**, without third-party library for the graphs: SVG thumbnails drawn by the server,
+interactive graph page (periods, zoom, values under the cursor) drawn in the browser.
 Data are stored in **MariaDB** database.
 
 ![Temperature graph](images/graph.png)

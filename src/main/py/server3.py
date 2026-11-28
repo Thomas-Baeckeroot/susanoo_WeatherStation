@@ -119,7 +119,7 @@ def put_own_python_first_in_path():
 def check_python_modules():
     # CGI scripts are run with sys.executable, so its environment must provide these
     missing = []
-    for module_name in ["pymysql", "svg.charts"]:
+    for module_name in ["pymysql"]:
         try:
             found = importlib.util.find_spec(module_name) is not None
         except ImportError:

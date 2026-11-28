@@ -1,7 +1,7 @@
 """Integration tests for the web server (server3.py).
 
 Each test class starts the real server in a temporary HOME with fake CGI scripts.
-Run with the venv's python (server3.py requires pymysql and svg.charts), from the repository root:
+Run with the venv's python (server3.py requires pymysql), from the repository root:
     /usr/local/share/susanoo-py-venv/bin/python3 -m unittest discover -s src/test/py -v
 Set SERVER3 to test another copy of server3.py.
 """
