@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Graphique – Centrale météo St Benoît</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <!-- Static page, shown at once; graph.js then loads the measures from /measures.json and draws them -->
+    <style>
+        :root {
+            --line: #1f5fa8;
+            --text: #1d2330;
+            --muted: #5b6475;
+            --grid: #d8dde6;
+            --card: #ffffff;
+            --button: #f2f4f8;
+            --button-active: #1f5fa8;
+        }
+        body {
+            margin: 0;
+            background-color: lightsteelblue;
+            color: var(--text);
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        }
+        .page {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 12px 16px 24px;
+        }
+        header, .controls {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px 16px;
+        }
+        header {
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+        a.home {
+            color: var(--text);
+        }
+        select, button {
+            font: inherit;
+            font-size: 0.95em;
+            padding: 6px 10px;
+            border: 1px solid #9aa3b5;
+            border-radius: 6px;
+            background: var(--button);
+            color: var(--text);
+            cursor: pointer;
+        }
+        button:disabled {
+            color: #a0a6b2;
+            cursor: default;
+        }
+        button.active {
+            background: var(--button-active);
+            border-color: var(--button-active);
+            color: #fff;
+        }
+        .card {
+            background: var(--card);
+            border: 1px solid #7f8ba3;
+            border-radius: 8px;
+            padding: 12px;
+        }
+        .summary {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            gap: 4px 16px;
+        }
+        h1 {
+            font-size: 1.3em;
+            margin: 0;
+        }
+        .last {
+            font-size: 1.15em;
+        }
+        .last .value {
+            font-weight: bold;
+        }
+        .last .when, .stats, .range, .hint {
+            color: var(--muted);
+        }
+        .last.stale .when::after {
+            content: " (pas de mesure récente)";
+            color: #b04000;
+        }
+        .controls {
+            margin: 10px 0;
+            justify-content: space-between;
+        }
+        .group {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 6px;
+        }
+        .range {
+            text-align: center;
+            font-size: 0.9em;
+        }
+        @media (min-width: 700px) {
+            .range {
+                min-width: 14em;
+            }
+        }
+        .chart {
+            position: relative;
+            /* Room for the graph before the data arrive: no layout jump */
+            height: clamp(240px, 45vw, 520px);
+            touch-action: pan-y;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        .chart svg {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        .chart.loading svg {
+            opacity: 0.35;
+        }
+        .status {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--muted);
+            pointer-events: none;
+        }
+        .tooltip {
+            position: absolute;
+            pointer-events: none;
+            background: rgba(29, 35, 48, 0.92);
+            color: #fff;
+            border-radius: 6px;
+            padding: 6px 8px;
+            font-size: 0.85em;
+            line-height: 1.35;
+            white-space: nowrap;
+        }
+        .tooltip .value {
+            font-weight: bold;
+            font-size: 1.1em;
+        }
+        .stats {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px 20px;
+            margin-top: 8px;
+            font-size: 0.95em;
+        }
+        .stats b {
+            color: var(--text);
+        }
+        .hint {
+            margin-top: 6px;
+            font-size: 0.8em;
+        }
+        [hidden] {
+            display: none !important;
+        }
+    </style>
+    <script src="graph.js" defer></script>
+</head>
+<body>
+<div class="page">
+    <header>
+        <a class="home" href="../index.html">← accueil</a>
+        <label>Capteur : <select id="sensor" aria-label="Capteur"></select></label>
+    </header>
+    <div class="card">
+        <div class="summary">
+            <h1 id="title">Graphique</h1>
+            <div id="last" class="last"></div>
+        </div>
+        <div class="controls">
+            <div class="group" role="group" aria-label="Durée affichée">
+                <button type="button" data-span="86400">24 h</button>
+                <button type="button" data-span="259200">3 j</button>
+                <button type="button" data-span="604800">7 j</button>
+                <button type="button" data-span="2592000">30 j</button>
+                <button type="button" data-span="31536000">1 an</button>
+            </div>
+            <div class="group">
+                <button type="button" id="previous" title="Période précédente (←)">◀</button>
+                <span id="range" class="range"></span>
+                <button type="button" id="next" title="Période suivante (→)">▶</button>
+                <button type="button" id="now" title="Jusqu'à maintenant (Fin)">Maintenant</button>
+            </div>
+        </div>
+        <div id="chart" class="chart loading">
+            <svg id="svg" xmlns="http://www.w3.org/2000/svg" aria-label="Graphique des mesures"></svg>
+            <div id="status" class="status">Chargement…</div>
+            <div id="tooltip" class="tooltip" hidden></div>
+        </div>
+        <div id="stats" class="stats"></div>
+        <div class="hint">Survol ou toucher : valeur à un instant. Glisser à la souris : zoom sur une période.
+            Flèches ← → : période précédente / suivante.</div>
+    </div>
+</div>
+</body>
+</html>

@@ -2,135 +2,79 @@
 # -*- coding: utf-8 -*-
 
 """
-Serves SVG chart of requested sensor.
+SVG graph of one sensor over the 24 hours up to 'maxepoch' (default: now):
+    graph.svg?sensor=temp_ext[&maxepoch=<epoch>][&width=<px>]
+Below 350 px wide (thumbnails of the index page): the line only, without text. The interactive graph page is
+html/graph.html; this image stays for the index thumbnails and older links.
 """
 
-import cgi
-import db_module
 import logging
+import os
+import time
+import urllib.parse
 
-from svg.charts import line
+import chart
+import db_module
 
 logging.basicConfig(
-    filename=db_module.get_home() + "/susanoo-web.log",  # = /home/pi/susanoo-web.log
-    level=logging.DEBUG,
+    filename=db_module.get_home() + "/susanoo-web.log",
+    level=logging.INFO,
     format='%(asctime)s %(levelname)-8.8s%(name)-14s (%(process)5d) %(message)s')
 log = logging.getLogger("graph.svg.py")
 
 SECONDS_IN_ONE_DAY = 86400
-METEO_FOLDER = "/home/pi/meteo/"
-CAPTURES_FOLDER = METEO_FOLDER + "captures/"
+TINY_GRAPH_WIDTH = 350
+# Longest query (s): on a cold cache, give up rather than pile up processes waiting on the disk
+MAX_STATEMENT_SECONDS = 30
 
 
-# START_TIME = time.time()
+def int_parameter(parameters, name, default, low, high):
+    try:
+        return min(max(int(float(parameters.get(name, [default])[0])), low), high)
+    except ValueError:
+        return default
 
 
-def generate_samples():
-    yield 'Line', sample_line()
+def main():
+    started = time.monotonic()
+    parameters = urllib.parse.parse_qs(os.environ.get("QUERY_STRING", ""))
+    sensor = parameters.get("sensor", [""])[0]
+    width = int_parameter(parameters, "width", 500, 50, 4000)
+    height = int(width * 2 / 5)
+    end = int_parameter(parameters, "maxepoch", int(time.time()), 0, 2 ** 31 - 1) + 1
+    start = end - SECONDS_IN_ONE_DAY
+    tiny = width < TINY_GRAPH_WIDTH
+    # One bucket per pixel column at most (thumbnail: 100 px -> one point per 15 min)
+    step = chart.bucket_step(start, end, width if tiny else width - 56)
 
-
-def sample_line():
-    form = cgi.FieldStorage()
-    sensor_name = form.getvalue("sensor")
-
-    width = form.getvalue("width")
-    if width is None:
-        width = 500.
-        # Measured widths: phones=980, Mc=1440
-    else:
-        width = float(width)
-    height = width * 2. / 5.
-    scale_hours = int(2700. / width)
-
-    if width < 350:
-        tiny_graph = True
-    else:
-        tiny_graph = False
-
-    maxepoch = form.getvalue("maxepoch")
-    if maxepoch is None:
-        maxepoch = 2000000000
-    maxepoch = int(maxepoch)
-
-    minepoch = maxepoch - SECONDS_IN_ONE_DAY
-
-    conn = db_module.get_conn()
-    curs = conn.cursor()
-    curs.execute("  SELECT  epochtimestamp, measure"
-                 "  FROM    raw_measures"
-                 "  WHERE   epochtimestamp<" + str(maxepoch)
-                 + "  AND   epochtimestamp>" + str(minepoch)
-                 + "  AND   sensor='" + sensor_name
-                 + "' ORDER BY epochtimestamp ASC;")
-
-    date_and_value = curs.fetchall()
-    epochdates = list()
-    values = list()
-    for i in list(range(len(date_and_value))):
-        epoch = date_and_value[i][0]
-        epoch_minutes = round(epoch / 60.)
-        if (epoch_minutes % (60 * scale_hours)) == 0:
-            epoch_hours = epoch_minutes / 60
-            hour_in_day = int(epoch_hours % 24)
-            epochdates.append(str(hour_in_day) + ":00")
+    buckets = []
+    try:
+        conn = db_module.get_conn()
+        try:
+            curs = conn.cursor()
+            curs.execute("SET SESSION max_statement_time = %s", (MAX_STATEMENT_SECONDS,))
+            curs.execute("SELECT sensor_label, unit FROM sensors WHERE name = %s", (sensor,))
+            row = curs.fetchone()
+            buckets = chart.fetch_buckets(curs, sensor, start, end, step) if row else []
+        finally:
+            conn.close()
+        label, unit = (row[0], row[1]) if row else (sensor, "")
+        if tiny:
+            svg = chart.sparkline_svg(buckets, start, end, step, width, height, title=label)
         else:
-            epochdates.append('')
-        # epochdates.append(date_and_value[i][0])
-        values.append(date_and_value[i][1])
+            svg = chart.chart_svg(buckets, start, end, step, width, height, unit=unit, title=label)
+    except Exception:
+        log.exception("Graph of sensor %r failed", sensor)
+        svg = chart.no_data_svg(width, height, title="Erreur")
 
-    g = line.Line()
-    options = dict(
-        scale_integers=True,
-        area_fill=True,
-        width=int(width),  # calculations done with width and height, must be integer in pixel ('em' not accepted...)
-        height=int(height),
-        fields=epochdates,
-        # fields=['18:00', '', '0:00', '', '6:00', '', '12:00', '', '18:00'],
-        graph_title=sensor_name,
-        # right_align=False,  # no effect?!
-        right_font=False,
-        scale_divisions=2,
-        show_graph_title=False,
-        show_y_labels=not tiny_graph,
-        show_x_labels=not tiny_graph,  # Hours below
-        # show_x_title=not(tiny_graph),  # Default False, "X Field names" below
-        # show_y_title=not(tiny_graph),  # Default False, "Y Scale" on left
-        show_graph_subtitle=False,
-        show_x_guidelines=False,  # vertical dot lines: One per *value*
-        show_y_guidelines=not tiny_graph,  # horizontal dot lines
-        stagger_y_labels=False,  # Default False (shift values for readability if too many)
-        step_include_first_y_label=False,
-        show_legend=False,
-        top_font=False,
-        no_css=False,
-    )
-    g.__dict__.update(options)
-    # g.add_data({'data': [-2, 3, 1, 3, 1], 'title': 'Female'})  # , 'title': 'Female'
-    # g.add_data({'data': [11, 10, 9, 9, 9, 9, 10, 11, 14], 'title': 'Temperature'})  # , 'title': 'Female'
-    g.add_data({'data': values, 'title': ''})
-    # g.add_data({'data': [11.6, 10.4, 9.6, 9.0, 9.3, 9.7, 10.3, 11.7, 14.0], 'title': ''})
-    # g.add_data({'data': [0, 2, 1, 5, 4], 'title': 'Male'})
-    return g
-
-
-def gen_sample():
-    yield sample_line()
-
-
-def save_samples():
-    # root = os.path.dirname(__file__)
-    for sample_name, sample in generate_samples():
-        # sample = gen_sample()
-
-        res = sample.burn()
-        print(res)
+    # The URL holds the end of the period: data before it hardly changes (late remote sync aside)
+    print("Content-Type: image/svg+xml; charset=utf-8")
+    print("Cache-Control: max-age=300")
+    print()
+    print(svg)
+    log.info("%s width=%d: %d buckets of %d s in %.2f s", sensor, width, len(buckets), step,
+             time.monotonic() - started)
 
 
 if __name__ == '__main__':
-    log.info("Start creating SVG")
-    print("Content-type: image/svg+xml; charset=utf-8\r\n\r\n")
-    print("""<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
-        "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\r\n""")
-    save_samples()
-    log.info("Terminated creating SVG")
-
+    main()

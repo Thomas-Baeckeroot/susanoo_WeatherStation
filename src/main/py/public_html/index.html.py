@@ -132,8 +132,7 @@ try:
                     "\t<td style=\"text-align: center;font-size: x-small;\">" + \
                     date_str + \
                     "</td>\n\t<td style=\"text-align: center;\">" + \
-                    "<a href=\"graph.svg?sensor=" + sensor_name + "&maxepoch=" + str(oldest_date) + \
-                    "&width=980\">" + \
+                    "<a href=\"html/graph.html?sensor=" + sensor_name + "\">" + \
                     "<img class=\"loading\" data-src=\"graph.svg?sensor=" + sensor_name + "&maxepoch=" + str(oldest_date) + \
                     "&width=100\" style=\"width:6.25em;height:2.5em; background-color: whitesmoke\" />" + \
                     "</a><td></tr>\n"
