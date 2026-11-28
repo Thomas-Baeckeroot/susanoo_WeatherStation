@@ -58,9 +58,10 @@ create_link() {
   # -n: replaces an existing link to a folder (captures) instead of creating a link inside that folder
   ln -sfnv "${target_file}" "${link_file}"
   # The server runs the CGI scripts, committed executable: make sure a checkout without file modes did not drop
-  # it. Not 'chmod <link>', which changes the target anyway (links have no rights of their own).
+  # it. Not 'chmod <link>', which changes the target anyway (links have no rights of their own). Only when
+  # needed: on a Synology NAS, chmod may replace the ACL of the file (e.g. the Read permission of the web user).
   case "${target_file}" in
-    *.py) chmod a+rx "${target_file}" ;;
+    *.py) [ -n "$(find "${target_file}" -perm -0555 2> /dev/null)" ] || chmod a+rx "${target_file}" ;;
   esac
 }
 
