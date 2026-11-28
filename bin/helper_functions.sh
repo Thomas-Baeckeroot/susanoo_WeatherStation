@@ -49,17 +49,19 @@ ask_confirmation() {
     [ "${user_input}" = "y" ] || [ "${user_input}" = "yes" ]
 }
 
-# Create symbolic link ${link_file} pointing to ${target_file}
+# Create (or replace) symbolic link ${link_file} pointing to ${target_file}.
+# As the current user, without sudo: the web root belongs to the data-collector user (see create_server_pages.sh).
 create_link() {
   local target_file="$1"  # file targeted by link
-  local link_file  # link to be created
-  link_file="$2"  # not using $(realpath "$2")
+  local link_file="$2"  # link to be created, not using $(realpath "$2")
 
-  # sudo runuser --login --command "ln -f -s ${HOME}/meteo/src/main/py/public_html/index.html.py ${HOME}/../${WEB_USER}/index.html"
-  # Used to be the upper. Why complicated?
-  # no command "runuser" on Synology NAS,
-  sudo ln --force --symbolic --verbose "${target_file}" "${link_file}"
-  sudo chmod 755 "${link_file}"
+  # -n: replaces an existing link to a folder (captures) instead of creating a link inside that folder
+  ln -sfnv "${target_file}" "${link_file}"
+  # The server runs the CGI scripts, committed executable: make sure a checkout without file modes did not drop
+  # it. Not 'chmod <link>', which changes the target anyway (links have no rights of their own).
+  case "${target_file}" in
+    *.py) chmod a+rx "${target_file}" ;;
+  esac
 }
 
 UNKNOWN_LOCATION_ERROR="Unknown location for init scripts"
