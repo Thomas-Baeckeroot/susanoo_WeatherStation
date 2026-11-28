@@ -230,7 +230,8 @@ def chart_svg(buckets, start, end, step, width, height, unit="", title=None):
         parts.append('<text x="%.1f" y="%d" text-anchor="middle" font-size="11" fill="%s">%s</text>'
                      % (x_of(epoch), height - 5, TEXT_COLOUR, escape(label)))
     if unit:
-        parts.append('<text x="4" y="%d" font-size="11" fill="%s">%s</text>' % (top + 10, TEXT_COLOUR, escape(unit)))
+        # Bottom left corner, the only place free of value and time labels
+        parts.append('<text x="4" y="%d" font-size="11" fill="%s">%s</text>' % (height - 5, TEXT_COLOUR, escape(unit)))
     for run in segments(buckets, step):
         band = " ".join("%.1f,%.1f" % (x(b), y(b[3])) for b in run) + " " + \
                " ".join("%.1f,%.1f" % (x(b), y(b[2])) for b in reversed(run))

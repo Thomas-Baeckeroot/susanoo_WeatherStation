@@ -25,6 +25,7 @@ This project is intended to be deployed on a Raspberry Pi (or compatible Linux);
 ## Tests
 
 - `src/test/py/test_server3.py`: stdlib `unittest` integration tests of `server3.py` (Python 3.8 compatible, no extra dependency). Each test starts the real server in a temporary HOME with fake CGI scripts: parallel requests, HTTP `Range`, complete large CGI output, CGI scripts using the server's venv python, disconnection logging, exit on missing modules, SIGTERM.
+- `src/test/py/test_chart.py`: graphs (`chart.py` buckets, chunks and sampling, scales, SVG) and the CGI scripts `graph.svg.py` / `measures.json.py` run in-process with a fake DB cursor (no MariaDB nor pymysql needed; the cursor checks that queries survive pymysql's `%` formatting).
 - Run with the venv's python, from the repository root: `/usr/local/share/susanoo-py-venv/bin/python3 -m unittest discover -s src/test/py -v` (~7 s). `SERVER3=<path>` tests another copy of `server3.py`.
 
 ## TODO
@@ -51,6 +52,8 @@ Two cooperating Python processes share a MariaDB database; the web layer is a CG
 - The server expects to be started from the working directory containing `index.html`. `check_working_dir()` will `chdir` and recreate missing `*.py` → unsuffixed symlinks (`graph.svg.py` → `graph.svg`, etc.) if needed; the canonical setup is via `bin/create_server_pages.sh`.
 - `public_html/db_module.py` is the DB access layer for the CGI scripts. **It deliberately copies `epoch_now`, `get_home`, `get_config` from `utils.py` rather than importing them** because the web user's `public_html/` is populated by symlinks to individual files, not the package — see the `# FIXME Not working because files here are linked (ln)` comment. Keep the two implementations in sync if you change `utils.py`.
 - DB driver is `pymysql` (selected at `db_module.py` top via the `db_module = pymysql` alias; alternatives like `mariadb`, `psycopg2`, `mysql.connector` are commented in place).
+- Graphs, without third-party library: `public_html/chart.py` (imported by the CGI scripts, found through the symlinks' real directory) reduces a sensor's measures in SQL to one bucket (average, min, max) per pixel column (`epochtimestamp DIV step`, nice steps, whole days beyond 3 h), reads periods over 30 days in 30-day chunks (else MariaDB scans every index entry of the sensor) and samples one measure per 10 min for daily buckets; it draws the SVG. `graph.svg` = index thumbnails (width < 350: line only) and a large SVG kept for old links; `measures.json` feeds the static page `html/graph.html` + `html/graph.js` (periods, previous / next, mouse zoom, values under the cursor, drawn in the browser; times in the browser's time zone). Migration 003's covering index `(sensor, epochtimestamp, measure)` makes these queries index-only.
+- New pages need their symlinks in the web root (re-run `bin/create_server_pages.sh`, needs root): `index.html.py` links thumbnails to `html/graph.html` only once it and `measures.json` exist there, else to the large `graph.svg`.
 
 ### Auxiliary processes
 - `video_capture_on_motion.py` — separate daemon listening on the GPIO motion sensor; records video via `MP4Box`.
